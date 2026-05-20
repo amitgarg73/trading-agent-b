@@ -71,6 +71,19 @@ def premarket(broker: str = "alpaca") -> None:
     print("\n[6] Guardrails check...")
     final, guard_rejected = guardrails.check(approved, broker=broker)
 
+    # If risk killed everything (e.g. daily loss limit), record a HALTED plan and stop
+    if not final and risk_rejected:
+        halt_reason = "; ".join(risk_rejected)
+        db.insert("b_trade_plans", {
+            "date":            str(date.today()),
+            "market_context":  str(mkt),
+            "pool3_tickers":   pool3_tickers,
+            "risk_note":       halt_reason,
+            "status":          "HALTED",
+        })
+        print(f"🛑 No trades placed — {halt_reason}")
+        return
+
     # 7. Save plan
     plan_id = None
     if final or trades:
