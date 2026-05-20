@@ -163,12 +163,15 @@ if page == "Today":
             cols[i % 5].metric(t, SECTOR_MAP.get(t, "—"))
         st.divider()
 
-    # --- Trade plan table ---
-    if trades:
-        st.subheader("Today's Trade Plan")
+    # --- Trade plan table (executed trades only — no pending) ---
+    executed_trades = [t for t in trades if _trade_status(t["ticker"])[0] != "⏳ Pending"]
+    if trades and not executed_trades:
+        st.info(f"Plan ready ({len(trades)} trades selected) — waiting for market open to execute")
+    if executed_trades:
+        st.subheader(f"Today's Trade Plan — {len(executed_trades)} executed")
         conf_icon = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
         rows = []
-        for t in trades:
+        for t in executed_trades:
             status_label, actual_pnl = _trade_status(t["ticker"])
             rows.append({
                 "Pool":        f"P{t.get('pool', '?')}",
@@ -186,7 +189,7 @@ if page == "Today":
 
         # --- Claude's reasoning ---
         with st.expander("💬 Claude's Reasoning per Trade"):
-            for t in trades:
+            for t in executed_trades:
                 confidence = t.get("confidence", "")
                 conf_clr   = "green" if confidence == "HIGH" else ("orange" if confidence == "MEDIUM" else "gray")
                 reasoning  = t.get("reasoning") or "No reasoning recorded"

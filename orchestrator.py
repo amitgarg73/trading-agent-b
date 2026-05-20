@@ -63,6 +63,21 @@ def premarket(broker: str = "alpaca") -> None:
     pool3_tickers = [m["ticker"] for m in pool3_context]
     print(f"    Pool 3: {pool3_tickers}")
 
+    # Cap candidates to what available capital can fund
+    from config.settings import TOTAL_CAPITAL, POSITION_SIZE_BY_CONFIDENCE
+    _open_b     = db.select("b_positions", filters={"status": "OPEN"})
+    _deployed_b = sum(float(p.get("position_size") or 0) for p in _open_b)
+    _available_b = TOTAL_CAPITAL - _deployed_b
+    _min_size_b  = min(POSITION_SIZE_BY_CONFIDENCE.values())
+    _capital_cap_b = max(0, int(_available_b // _min_size_b))
+    if len(pool3_tickers) > _capital_cap_b:
+        pool3_context = pool3_context[:_capital_cap_b]
+        pool3_tickers = pool3_tickers[:_capital_cap_b]
+        print(f"    Capital cap: trimmed to {_capital_cap_b} candidates "
+              f"(${_available_b:,.0f} available / ${_min_size_b:,} min size)")
+    else:
+        print(f"    Capital available: ${_available_b:,.0f} → fits all {len(pool3_tickers)} candidates")
+
     if not pool3_tickers:
         print("[orchestrator] No Pool 3 candidates — skipping today")
         return
