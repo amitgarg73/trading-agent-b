@@ -100,9 +100,20 @@ create table if not exists b_daily_performance (
     win_rate        numeric,
     avg_pnl_per_trade numeric,
     expectancy      numeric,
+    -- Regime logging — passive observation, no hard gate
+    vix_level       numeric,
+    fear_greed      int,
+    spy_change_pct  numeric,
+    regime_label    text,                 -- TREND | CHOPPY | HIGH_VOL | FEAR
     created_at      timestamptz default now(),
     unique(date, pool)
 );
+
+-- Add regime columns to existing table if already created
+alter table b_daily_performance add column if not exists vix_level numeric;
+alter table b_daily_performance add column if not exists fear_greed int;
+alter table b_daily_performance add column if not exists spy_change_pct numeric;
+alter table b_daily_performance add column if not exists regime_label text;
 
 -- Indexes for common queries
 create index if not exists idx_b_positions_status  on b_positions(status);

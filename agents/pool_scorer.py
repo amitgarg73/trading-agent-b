@@ -165,10 +165,22 @@ def score_today() -> dict:
 
 
 def write_daily_performance() -> None:
-    """Compute and store daily P&L summary by pool in b_daily_performance."""
+    """Compute and store daily P&L summary by pool in b_daily_performance.
+    Also logs today's regime for passive analysis."""
+    from agents.market_context import get as get_market_context, get_regime_label
+
     today   = str(date.today())
     closed  = db.select("b_positions", filters={"status": "CLOSED"})
     today_c = [p for p in closed if str(p.get("closed_at", ""))[:10] == today]
+
+    # Fetch regime data once
+    mkt          = get_market_context()
+    vix          = mkt.get("vix_level")
+    fear_greed   = mkt.get("fear_greed")
+    spy_change   = mkt.get("spy_change_pct")
+    regime_label = get_regime_label(vix, fear_greed, spy_change)
+    print(f"[pool_scorer] Regime today: {regime_label} "
+          f"(VIX={vix}, F&G={fear_greed}, SPY={spy_change}%)")
 
     by_pool: dict[int | None, list] = {}
     for p in today_c:
@@ -182,21 +194,24 @@ def write_daily_performance() -> None:
         n        = len(positions)
         win_rate = round(len(wins) / n, 4) if n else 0
         avg_pnl  = round(gross / n, 2) if n else 0
-        # Expectancy = win_rate * avg_win + loss_rate * avg_loss
         avg_win  = sum(p.get("realized_pnl") or 0 for p in wins) / len(wins) if wins else 0
         losses   = [p for p in positions if (p.get("realized_pnl") or 0) <= 0]
         avg_loss = sum(p.get("realized_pnl") or 0 for p in losses) / len(losses) if losses else 0
         exp      = round(win_rate * avg_win + (1 - win_rate) * avg_loss, 2)
 
         row = {
-            "date":             today,
-            "pool":             pool,
-            "trades_taken":     n,
-            "wins":             len(wins),
-            "losses":           len(losses),
-            "gross_pnl":        round(gross, 2),
-            "win_rate":         win_rate,
+            "date":              today,
+            "pool":              pool,
+            "trades_taken":      n,
+            "wins":              len(wins),
+            "losses":            len(losses),
+            "gross_pnl":         round(gross, 2),
+            "win_rate":          win_rate,
             "avg_pnl_per_trade": avg_pnl,
-            "expectancy":       exp,
+            "expectancy":        exp,
+            "vix_level":         vix,
+            "fear_greed":        fear_greed,
+            "spy_change_pct":    spy_change,
+            "regime_label":      regime_label,
         }
         db.upsert("b_daily_performance", row, on_conflict="date,pool")

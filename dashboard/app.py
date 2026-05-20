@@ -117,6 +117,37 @@ if page == "Strategy B":
                 labels={"gross_pnl": "P&L ($)", "pool": "Pool"},
             )
             st.plotly_chart(fig, use_container_width=True)
+
+        # Regime observation table
+        if "regime_label" in df_perf_total.columns:
+            st.subheader("Regime Log — Passive Observation")
+            st.caption("No trades are blocked by regime yet. This data will tell us whether to add a gate after 30 days.")
+            regime_cols = ["date", "regime_label", "vix_level", "fear_greed",
+                           "spy_change_pct", "gross_pnl", "win_rate", "trades_taken"]
+            available = [c for c in regime_cols if c in df_perf_total.columns]
+            df_regime = df_perf_total[available].sort_values("date", ascending=False)
+            df_regime.columns = [c.replace("_", " ").title() for c in df_regime.columns]
+
+            # Color rows by regime
+            def _color_regime(val):
+                colors = {"FEAR": "background-color: #5c1a1a",
+                          "HIGH_VOL": "background-color: #4a3800",
+                          "TREND": "background-color: #1a3a1a",
+                          "CHOPPY": "background-color: #1a1a3a"}
+                return colors.get(val, "")
+
+            st.dataframe(df_regime, use_container_width=True, hide_index=True)
+
+            # P&L by regime summary
+            if "regime_label" in df_perf_total.columns and not df_perf_total.empty:
+                regime_summary = df_perf_total.groupby("regime_label").agg(
+                    days=("date", "count"),
+                    total_pnl=("gross_pnl", "sum"),
+                    avg_pnl=("gross_pnl", "mean"),
+                    avg_win_rate=("win_rate", "mean"),
+                ).reset_index()
+                regime_summary.columns = ["Regime", "Days", "Total P&L", "Avg P&L/Day", "Avg Win Rate"]
+                st.dataframe(regime_summary, use_container_width=True, hide_index=True)
     else:
         st.info("No performance data yet")
 

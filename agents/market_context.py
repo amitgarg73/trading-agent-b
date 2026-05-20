@@ -46,3 +46,27 @@ def get() -> dict:
     print(f"[market_context] VIX={context.get('vix_level')} "
           f"F&G={context.get('fear_greed')} bias={context.get('futures_bias')}")
     return context
+
+
+def get_regime_label(vix: float | None, fear_greed: int | None,
+                     spy_change_pct: float | None) -> str:
+    """
+    Classify today's market regime for passive logging.
+    No hard gates — observation only in Phase 1.
+
+    FEAR:     VIX > 35 OR Fear&Greed < 15 OR SPY < -2%
+    HIGH_VOL: VIX > 25 OR SPY move > 1.5% either direction
+    TREND:    SPY move > 0.5% in one direction, VIX calm
+    CHOPPY:   everything else
+    """
+    vix = vix or 0
+    fg  = fear_greed or 50
+    spy = spy_change_pct or 0
+
+    if vix > 35 or fg < 15 or spy < -2.0:
+        return "FEAR"
+    if vix > 25 or abs(spy) > 1.5:
+        return "HIGH_VOL"
+    if abs(spy) > 0.5:
+        return "TREND"
+    return "CHOPPY"
