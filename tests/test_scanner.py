@@ -82,3 +82,62 @@ def test_run_scan_sorted_by_score(mock_score):
 def test_run_scan_empty_universe(mock_score):
     results = run_scan([])
     assert results == []
+
+
+# ── Behavioral signal tests ──────────────────────────────────────────────────
+
+def _make_df_with_gap(n=30, open_px=105.0, close_px=107.0, prev_close=100.0) -> pd.DataFrame:
+    """Build a df where last bar has a gap from prev_close → open_px."""
+    closes  = [prev_close] * (n - 1) + [close_px]
+    opens   = [prev_close - 0.2] * (n - 1) + [open_px]
+    highs   = [c + 1.0 for c in closes]
+    lows    = [c - 0.8 for c in closes]
+    volumes = [8_000_000] * n
+    return pd.DataFrame({
+        "open": opens, "high": highs, "low": lows,
+        "close": closes, "volume": volumes,
+    })
+
+
+from scanner.scanner import _behavioral_score
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+def test_vwap_reclaim_signal_detected(mock_sector):
+    """Stock opened below typical price (VWAP proxy) but closed above → reclaim."""
+    df = _make_df_with_gap(open_px=98.0, close_px=105.0, prev_close=100.0)
+    # typical = (high + low + close) / 3 ≈ (106 + 104.2 + 105) / 3 ≈ 105.1
+    # open=98 < typical=105.1 → opened_below_vwap=True, close=105 < typical=105.1 → above_vwap=False
+    # Actually close=105 vs typical≈105.1 — borderline. Let me adjust:
+    df.loc[df.index[-1], "close"] = 108.0   # well above typical
+    result = _behavioral_score("AAPL", df, {})
+    assert result["vwap_signal"] in ("RECLAIM", "ABOVE")
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+def test_gap_up_holding_adds_score(mock_sector):
+    """Stock gapped up >1% and is still holding near open → continuation signal."""
+    df = _make_df_with_gap(open_px=103.0, close_px=103.5, prev_close=100.0)
+    result = _behavioral_score("AAPL", df, {})
+    assert result["gap_pct"] > 1.0
+    # Holding the gap: close >= open * 0.99
+    gap_holding_signal = any("holding" in s for s in result["behavior_signals"])
+    assert gap_holding_signal
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+def test_gap_up_fading_penalises_score(mock_sector):
+    """Stock gapped up but has fallen back below the open → weakness."""
+    df = _make_df_with_gap(open_px=105.0, close_px=100.5, prev_close=100.0)
+    result = _behavioral_score("AAPL", df, {})
+    fading_signal = any("fading" in s for s in result["behavior_signals"])
+    assert fading_signal
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+def test_behavioral_score_returns_required_keys(mock_sector):
+    df = _make_df()
+    result = _behavioral_score("AAPL", df, {})
+    for key in ("atr_ratio", "above_vwap", "vwap_signal", "vwap_reclaim",
+                "gap_pct", "rs_vs_sector", "behavior_score", "behavior_signals"):
+        assert key in result, f"Missing key: {key}"

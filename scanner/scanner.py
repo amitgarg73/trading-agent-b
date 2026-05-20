@@ -77,17 +77,34 @@ def _behavioral_score(ticker: str, df: pd.DataFrame, info: dict) -> dict:
         elif atr_ratio > 2.0:
             score -= 1; signals.append(f"ATR extended ({atr_ratio:.1f}x avg) — volatile")
 
-    # VWAP position (intraday — approximate from today's OHLC)
-    today_open   = float(df["open"].iloc[-1])
-    today_close  = float(close.iloc[-1])
-    today_volume = float(volume.iloc[-1])
+    # VWAP position (approximate from daily OHLC)
+    today_open    = float(df["open"].iloc[-1])
+    today_close   = float(close.iloc[-1])
+    today_volume  = float(volume.iloc[-1])
     typical_price = (float(high.iloc[-1]) + float(low.iloc[-1]) + today_close) / 3
-    above_vwap = today_close > typical_price
-    vwap_signal = "ABOVE" if above_vwap else "BELOW"
-    if above_vwap:
+    above_vwap    = today_close > typical_price
+
+    # VWAP reclaim: opened below VWAP (open < typical), now above it — stronger signal
+    opened_below_vwap = today_open < typical_price
+    vwap_reclaim = above_vwap and opened_below_vwap
+    vwap_signal  = "RECLAIM" if vwap_reclaim else ("ABOVE" if above_vwap else "BELOW")
+    if vwap_reclaim:
+        score += 2; signals.append("VWAP reclaim — opened below, now above (high conviction)")
+    elif above_vwap:
         score += 1; signals.append("Price above VWAP")
     else:
         score -= 1; signals.append("Price below VWAP")
+
+    # Gap behavior — gap up and holding vs fading
+    prev_close_px = float(close.iloc[-2]) if len(close) >= 2 else today_open
+    gap_pct = (today_open - prev_close_px) / prev_close_px * 100
+    if gap_pct > 1.0:
+        if today_close >= today_open * 0.99:
+            score += 1; signals.append(f"Gap up {gap_pct:.1f}% holding — continuation")
+        else:
+            score -= 1; signals.append(f"Gap up {gap_pct:.1f}% fading — weakness")
+    elif gap_pct < -1.0:
+        score -= 1; signals.append(f"Gap down {gap_pct:.1f}%")
 
     # Opening range context — is price above today's open?
     if today_close > today_open:
@@ -107,10 +124,12 @@ def _behavioral_score(ticker: str, df: pd.DataFrame, info: dict) -> dict:
             score -= 1; signals.append(f"Negative sector RS ({rs_vs_sector:.1f}x)")
 
     return {
-        "atr_ratio":    atr_ratio,
-        "above_vwap":   above_vwap,
-        "vwap_signal":  vwap_signal,
-        "rs_vs_sector": rs_vs_sector,
+        "atr_ratio":      atr_ratio,
+        "above_vwap":     above_vwap,
+        "vwap_signal":    vwap_signal,
+        "vwap_reclaim":   vwap_reclaim,
+        "gap_pct":        round(gap_pct, 2),
+        "rs_vs_sector":   rs_vs_sector,
         "behavior_score": score,
         "behavior_signals": signals,
     }
@@ -208,6 +227,9 @@ def _score_ticker(ticker: str) -> dict | None:
         "price_vs_sma50": price_vs_sma50,
         "momentum_5d":    momentum_5d,
         "above_vwap":     behavioral["above_vwap"],
+        "vwap_reclaim":   behavioral["vwap_reclaim"],
+        "vwap_signal":    behavioral["vwap_signal"],
+        "gap_pct":        behavioral["gap_pct"],
         "atr_ratio":      behavioral["atr_ratio"],
         "rs_vs_sector":   behavioral["rs_vs_sector"],
         "signals":        signals + behavioral["behavior_signals"],

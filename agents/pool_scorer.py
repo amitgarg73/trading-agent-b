@@ -101,12 +101,16 @@ def score_today() -> dict:
         ticker   = pos["ticker"]
         pool     = pos.get("pool", 2)
         entry    = float(pos.get("entry_price") or 0)
+        fill     = float(pos.get("fill_price") or 0)
         close_px = float(pos.get("close_price") or 0)
         pnl      = float(pos.get("realized_pnl") or 0)
         win      = pnl > 0
 
-        # Slippage: difference between planned entry and actual fill (not tracked precisely yet — use 0)
-        slippage_bps = 0.0
+        # Slippage: planned entry vs actual Alpaca fill price
+        if fill and entry:
+            slippage_bps = round(abs(fill - entry) / entry * 10_000, 1)
+        else:
+            slippage_bps = 0.0
 
         daily = _compute_daily_score(win, pnl, slippage_bps, None)
         rolling = _compute_rolling_score(ticker, daily)

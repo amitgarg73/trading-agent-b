@@ -115,6 +115,16 @@ alter table b_daily_performance add column if not exists fear_greed int;
 alter table b_daily_performance add column if not exists spy_change_pct numeric;
 alter table b_daily_performance add column if not exists regime_label text;
 
+-- P0: Execution quality columns
+-- fill_price: actual Alpaca fill price (vs entry_price which is the planned price)
+-- low_watermark: lowest price reached while open (for MAE calculation)
+-- mae: Maximum Adverse Excursion in dollars (how far against us it went)
+-- mfe: Maximum Favorable Excursion in dollars (how far in our favour it went)
+alter table b_positions add column if not exists fill_price numeric;
+alter table b_positions add column if not exists low_watermark numeric;
+alter table b_positions add column if not exists mae numeric;
+alter table b_positions add column if not exists mfe numeric;
+
 -- Indexes for common queries
 create index if not exists idx_b_positions_status  on b_positions(status);
 create index if not exists idx_b_positions_ticker  on b_positions(ticker);

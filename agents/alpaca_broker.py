@@ -66,19 +66,40 @@ def place_orders(trades: list[dict]) -> list[dict]:
             order = broker.submit_order(req)
             print(f"[alpaca] BUY {shares} {ticker} @ market (pool {pool}) — order {order.id}")
 
+            # Fetch actual fill price — wait up to 4s for market order to fill
+            fill_price = None
+            for _ in range(4):
+                time.sleep(1)
+                try:
+                    filled = broker.get_order_by_id(str(order.id))
+                    if filled.filled_avg_price:
+                        fill_price = float(filled.filled_avg_price)
+                        break
+                except Exception:
+                    pass
+
+            planned_entry = float(trade["entry_price"])
+            if fill_price:
+                slippage_bps = round(abs(fill_price - planned_entry) / planned_entry * 10_000, 1)
+                print(f"[alpaca] {ticker} fill=${fill_price:.2f} planned=${planned_entry:.2f} slip={slippage_bps}bps")
+            else:
+                fill_price = planned_entry  # fallback if order not yet filled
+
             # Write to b_positions
             db.insert("b_positions", {
                 "ticker":          ticker,
                 "pool":            pool,
                 "action":          "BUY",
-                "entry_price":     trade["entry_price"],
+                "entry_price":     planned_entry,
+                "fill_price":      fill_price,
                 "target_price":    trade["target_price"],
                 "stop_loss":       trade["stop_loss"],
                 "shares":          shares,
                 "position_size":   trade["position_size"],
                 "status":          "OPEN",
                 "alpaca_order_id": str(order.id),
-                "high_watermark":  trade["entry_price"],
+                "high_watermark":  fill_price,
+                "low_watermark":   fill_price,
             })
 
             placed.append({**trade, "alpaca_order_id": str(order.id)})
@@ -121,16 +142,19 @@ def update_positions_intraday() -> dict:
         target   = float(pos["target_price"])
         stop     = float(pos["stop_loss"])
         shares   = int(pos["shares"])
-        watermark = float(pos.get("high_watermark") or entry)
+        watermark     = float(pos.get("high_watermark") or entry)
+        low_watermark = float(pos.get("low_watermark")  or entry)
 
-        unrealized = round(shares * (price - entry), 2)
+        unrealized    = round(shares * (price - entry), 2)
         new_watermark = max(watermark, price)
+        new_low_wm    = min(low_watermark, price)
 
-        # Update watermark
+        # Update watermarks
         db.update("b_positions", {"id": pos["id"]}, {
             "current_price":  price,
             "unrealized_pnl": unrealized,
             "high_watermark": new_watermark,
+            "low_watermark":  new_low_wm,
         })
 
         close_reason = None
@@ -173,8 +197,13 @@ def close_all_positions(reason: str = "EOD") -> list[dict]:
 def _close_position(pos: dict, price: float, reason: str) -> None:
     ticker  = pos["ticker"]
     shares  = int(pos["shares"])
-    entry   = float(pos["entry_price"])
+    entry   = float(pos["fill_price"] or pos["entry_price"])  # use actual fill price for P&L
     pnl     = round(shares * (price - entry), 2)
+
+    high_wm = float(pos.get("high_watermark") or entry)
+    low_wm  = float(pos.get("low_watermark")  or entry)
+    mae     = round(max(0.0, (entry - low_wm)  * shares), 2)  # dollars against us
+    mfe     = round(max(0.0, (high_wm - entry) * shares), 2)  # dollars in our favour
 
     try:
         broker = _get()
@@ -190,11 +219,13 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
         print(f"[alpaca] Close order failed for {ticker}: {e}")
 
     db.update("b_positions", {"id": pos["id"]}, {
-        "status":       "CLOSED",
-        "close_price":  price,
-        "realized_pnl": pnl,
-        "close_reason": reason,
-        "closed_at":    datetime.utcnow().isoformat(),
+        "status":         "CLOSED",
+        "close_price":    price,
+        "realized_pnl":   pnl,
+        "close_reason":   reason,
+        "closed_at":      datetime.utcnow().isoformat(),
         "exit_mechanism": reason,
+        "mae":            mae,
+        "mfe":            mfe,
     })
     print(f"[alpaca] Closed {ticker} @ ${price:.2f} — P&L ${pnl:.2f} ({reason})")

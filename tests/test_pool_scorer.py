@@ -32,6 +32,47 @@ def test_high_slippage_lowers_score():
     assert low_slip > high_slip
 
 
+def test_slippage_computed_from_fill_price():
+    """score_today() should use fill_price vs entry_price, not hardcode 0."""
+    from unittest.mock import patch, MagicMock
+    from agents.pool_scorer import score_today
+    from datetime import date
+
+    today = str(date.today())
+    fake_position = {
+        "ticker":       "AAPL",
+        "pool":         3,
+        "entry_price":  180.00,   # planned
+        "fill_price":   180.36,   # actual fill — 20 bps slip
+        "close_price":  183.00,
+        "realized_pnl": 300.0,
+        "closed_at":    f"{today}T15:30:00",
+        "status":       "CLOSED",
+    }
+
+    with patch("agents.pool_scorer.db.select") as mock_select, \
+         patch("agents.pool_scorer.db.upsert") as mock_upsert, \
+         patch("agents.pool_scorer.pool_manager.update_trade_stats"), \
+         patch("agents.pool_scorer.pool_manager.apply_promotions_demotions", return_value={"promoted": [], "demoted": []}), \
+         patch("agents.pool_scorer.pool_manager.get_pool", return_value=[]):
+
+        def select_side(table, **kwargs):
+            if table == "b_positions":
+                return [fake_position]
+            return []
+
+        mock_select.side_effect = select_side
+
+        score_today()
+
+        # Find the upsert call for AAPL and check slippage_bps is non-zero
+        calls = mock_upsert.call_args_list
+        aapl_call = next((c for c in calls if c.args[1].get("ticker") == "AAPL"), None)
+        assert aapl_call is not None
+        slip = aapl_call.args[1].get("slippage_bps", 0)
+        assert slip > 0, f"Expected non-zero slippage, got {slip}"
+
+
 @patch("agents.pool_scorer.db.select")
 def test_rolling_score_empty_history_returns_today(mock_select):
     mock_select.return_value = []
