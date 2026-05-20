@@ -69,7 +69,7 @@ def premarket(broker: str = "alpaca") -> None:
 
     # 6. Guardrails
     print("\n[6] Guardrails check...")
-    final, guard_rejected = guardrails.check(approved)
+    final, guard_rejected = guardrails.check(approved, broker=broker)
 
     # 7. Save plan
     plan_id = None
