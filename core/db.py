@@ -39,17 +39,17 @@ def upsert(table: str, row: dict, on_conflict: str = "id") -> dict:
 
 
 def update(table: str, filters: dict, values: dict) -> list[dict]:
-    q = _get().table(table)
+    q = _get().table(table).update(values)
     for k, v in filters.items():
         q = q.eq(k, v)
-    return q.update(values).execute().data or []
+    return q.execute().data or []
 
 
 def delete(table: str, filters: dict) -> list[dict]:
-    q = _get().table(table)
+    q = _get().table(table).delete()
     for k, v in filters.items():
         q = q.eq(k, v)
-    return q.delete().execute().data or []
+    return q.execute().data or []
 
 
 def rpc(fn: str, params: dict | None = None) -> list[dict]:
