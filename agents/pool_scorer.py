@@ -203,6 +203,25 @@ def write_daily_performance() -> None:
         avg_loss = sum(p.get("realized_pnl") or 0 for p in losses) / len(losses) if losses else 0
         exp      = round(win_rate * avg_win + (1 - win_rate) * avg_loss, 2)
 
+        # Alpaca equity reconciliation — only for the total row (pool=None)
+        alpaca_equity = None
+        friction_gap  = None
+        if pool is None:
+            try:
+                from agents.alpaca_broker import _get as _broker
+                account       = _broker().get_account()
+                alpaca_equity = round(float(account.equity), 2)
+                # Strategy B cumulative P&L (all closed positions ever)
+                all_b_perf    = db.select("b_daily_performance", filters={"pool": None})
+                cumulative_b  = sum(r.get("gross_pnl", 0) or 0 for r in all_b_perf)
+                our_calc      = round(50_000 + cumulative_b + round(gross, 2), 2)
+                friction_gap  = round(alpaca_equity - our_calc, 2)
+                gap_sign      = "+" if friction_gap >= 0 else ""
+                print(f"[pool_scorer] Alpaca equity=${alpaca_equity:,.2f} | "
+                      f"B calc=${our_calc:,.2f} | gap={gap_sign}${friction_gap:,.2f}")
+            except Exception as e:
+                print(f"[pool_scorer] Alpaca equity fetch failed: {e}")
+
         row = {
             "date":              today,
             "pool":              pool,
@@ -217,5 +236,7 @@ def write_daily_performance() -> None:
             "fear_greed":        fear_greed,
             "spy_change_pct":    spy_change,
             "regime_label":      regime_label,
+            "alpaca_equity":     alpaca_equity,
+            "friction_gap":      friction_gap,
         }
         db.upsert("b_daily_performance", row, on_conflict="date,pool")

@@ -66,24 +66,34 @@ def place_orders(trades: list[dict]) -> list[dict]:
             order = broker.submit_order(req)
             print(f"[alpaca] BUY {shares} {ticker} @ market (pool {pool}) — order {order.id}")
 
-            # Fetch actual fill price — wait up to 4s for market order to fill
-            fill_price = None
-            for _ in range(4):
+            # Verify order filled (not cancelled/rejected) before writing to DB
+            fill_price     = None
+            order_accepted = False
+            for _ in range(5):
                 time.sleep(1)
                 try:
                     filled = broker.get_order_by_id(str(order.id))
-                    if filled.filled_avg_price:
-                        fill_price = float(filled.filled_avg_price)
+                    status = str(filled.status).lower()
+                    if status in ("filled", "partially_filled"):
+                        fill_price     = float(filled.filled_avg_price) if filled.filled_avg_price else None
+                        order_accepted = True
+                        break
+                    elif status in ("cancelled", "rejected", "expired"):
+                        print(f"[alpaca] {ticker} order {status} — skipping DB write")
                         break
                 except Exception:
                     pass
+
+            if not order_accepted:
+                print(f"[alpaca] {ticker} — could not confirm fill after 5s, skipping DB write")
+                continue  # don't write a phantom position
 
             planned_entry = float(trade["entry_price"])
             if fill_price:
                 slippage_bps = round(abs(fill_price - planned_entry) / planned_entry * 10_000, 1)
                 print(f"[alpaca] {ticker} fill=${fill_price:.2f} planned=${planned_entry:.2f} slip={slippage_bps}bps")
             else:
-                fill_price = planned_entry  # fallback if order not yet filled
+                fill_price = planned_entry
 
             # Write to b_positions
             db.insert("b_positions", {
@@ -205,6 +215,8 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
     mae     = round(max(0.0, (entry - low_wm)  * shares), 2)  # dollars against us
     mfe     = round(max(0.0, (high_wm - entry) * shares), 2)  # dollars in our favour
 
+    close_confirmed = False
+    actual_close_price = price
     try:
         broker = _get()
         req = MarketOrderRequest(
@@ -214,10 +226,35 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
             time_in_force=TimeInForce.DAY,
             client_order_id=_order_id(f"{ticker}_exit"),
         )
-        broker.submit_order(req)
+        close_order = broker.submit_order(req)
+
+        # Verify the sell actually filled before marking CLOSED in DB
+        for _ in range(5):
+            time.sleep(1)
+            try:
+                result = broker.get_order_by_id(str(close_order.id))
+                status = str(result.status).lower()
+                if status == "filled":
+                    if result.filled_avg_price:
+                        actual_close_price = float(result.filled_avg_price)
+                    close_confirmed = True
+                    break
+                elif status in ("cancelled", "rejected", "expired"):
+                    print(f"[alpaca] ⚠️ ALERT: Close order for {ticker} {status} — position stays OPEN")
+                    return  # do NOT mark as closed in DB
+            except Exception:
+                pass
+
+        if not close_confirmed:
+            print(f"[alpaca] ⚠️ Could not confirm close for {ticker} after 5s — position stays OPEN in DB")
+            return
+
     except Exception as e:
         print(f"[alpaca] Close order failed for {ticker}: {e}")
+        return  # don't update DB if order submission failed
 
+    price = actual_close_price
+    pnl   = round(shares * (price - entry), 2)
     db.update("b_positions", {"id": pos["id"]}, {
         "status":         "CLOSED",
         "close_price":    price,

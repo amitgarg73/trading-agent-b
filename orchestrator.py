@@ -15,6 +15,20 @@ from core import db
 from core.pool_manager import seed_pools_if_empty
 
 
+def _is_trading_day() -> bool:
+    """Return False on weekends and NYSE holidays using Alpaca's calendar."""
+    if date.today().weekday() >= 5:
+        return False
+    try:
+        from alpaca.trading.client import TradingClient
+        from config.settings import ALPACA_API_KEY, ALPACA_SECRET_KEY
+        client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+        cal = client.get_calendar(start=str(date.today()), end=str(date.today()))
+        return len(cal) > 0
+    except Exception:
+        return True  # fail open — don't block trading if calendar check fails
+
+
 def _is_halted() -> bool:
     rows = db.select("b_trade_plans", filters={"status": "HALTED"})
     if rows and rows[0].get("date") == str(date.today()):
@@ -27,6 +41,10 @@ def premarket(broker: str = "alpaca") -> None:
     print(f"\n{'='*60}")
     print(f"  STRATEGY B — PREMARKET — {datetime.now().strftime('%Y-%m-%d %H:%M ET')}")
     print(f"{'='*60}\n")
+
+    if not _is_trading_day():
+        print(f"[orchestrator] {date.today()} is not a NYSE trading day — skipping")
+        return
 
     # Prevent double-run
     existing = db.select("b_trade_plans", filters={"date": str(date.today())})
