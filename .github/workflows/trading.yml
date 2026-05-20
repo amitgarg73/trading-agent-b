@@ -1,0 +1,78 @@
+name: Trading Agent B
+
+on:
+  schedule:
+    # All times UTC (EDT = UTC-4)
+    - cron: '0 14 * * 1-5'              # 10:00 AM ET — premarket
+    - cron: '0,15,30,45 14-19 * * 1-5'  # Every 15 min 10:00-3:45 PM ET — intraday
+    - cron: '30 20 * * 1-5'             # 4:30 PM ET — EOD
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'premarket'
+        type: choice
+        options: [premarket, intraday, eod]
+      broker:
+        description: 'Broker'
+        required: false
+        default: 'alpaca'
+        type: choice
+        options: [alpaca, simulation]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+            echo "broker=${{ github.event.inputs.broker || 'alpaca' }}" >> $GITHUB_OUTPUT
+          else
+            HOUR=$(date -u +%H)
+            MIN=$(date -u +%M)
+            TIME=$((HOUR * 60 + MIN))
+            if [ $TIME -ge 840 ] && [ $TIME -lt 870 ]; then
+              echo "mode=premarket" >> $GITHUB_OUTPUT
+            elif [ $TIME -ge 1230 ]; then
+              echo "mode=eod" >> $GITHUB_OUTPUT
+            else
+              echo "mode=intraday" >> $GITHUB_OUTPUT
+            fi
+            echo "broker=alpaca" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Strategy B
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          ALPACA_API_KEY:     ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
+        run: |
+          for attempt in 1 2 3; do
+            echo "▶ Attempt $attempt of 3"
+            python orchestrator.py --mode ${{ steps.mode.outputs.mode }} --broker ${{ steps.mode.outputs.broker }} && break
+            if [ $attempt -lt 3 ]; then
+              echo "  ⚠️ Attempt $attempt failed — retrying in 60s..."
+              sleep 60
+            else
+              echo "  ❌ All 3 attempts failed"
+              exit 1
+            fi
+          done

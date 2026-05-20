@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          ANTHROPIC_API_KEY:  placeholder
+          SUPABASE_URL:       placeholder
+          SUPABASE_KEY:       placeholder
+          ALPACA_API_KEY:     placeholder
+          ALPACA_SECRET_KEY:  placeholder
+        run: pytest tests/ -v --tb=short

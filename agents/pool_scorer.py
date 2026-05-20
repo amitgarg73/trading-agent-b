@@ -1,0 +1,202 @@
+"""
+Pool Scorer — runs at EOD to score every Pool 1/2 stock and update rolling scores.
+
+Scoring factors:
+  - Win/Loss (40%) — did trades on this stock win?
+  - P&L magnitude (30%) — scaled to position size
+  - Slippage (20%) — fill quality vs expected entry
+  - Setup quality (10%) — did scanner signals align with outcome?
+
+Rolling score: 7-day weighted average (last 2 days = 2x weight).
+After scoring, applies promotions/demotions via pool_manager.
+"""
+from __future__ import annotations
+from datetime import date, timedelta
+from core import db
+from core import pool_manager
+from config.settings import (
+    SCORE_WEIGHT_WIN_LOSS, SCORE_WEIGHT_PNL, SCORE_WEIGHT_SLIPPAGE,
+    SCORE_WEIGHT_SETUP, SCORE_ROLLING_DAYS, SCORE_RECENT_MULTIPLIER,
+)
+
+
+def _compute_daily_score(win: bool | None, pnl: float | None,
+                          slippage_bps: float | None, setup_score: float | None) -> float:
+    """Compute composite daily score 0-10 for a stock."""
+    score = 0.0
+
+    # Win/Loss component (0-10 scale before weight); 5.0 neutral if not traded
+    wl = (8.0 if win else 2.0) if win is not None else 5.0
+    score += wl * SCORE_WEIGHT_WIN_LOSS
+
+    # P&L component — normalized: $200 profit = full score; 5.0 neutral if not traded
+    if pnl is not None:
+        pnl_score = min(10.0, max(0.0, (pnl + 100) / 30))  # -100 = 0, +200 = 10
+    else:
+        pnl_score = 5.0
+    score += pnl_score * SCORE_WEIGHT_PNL
+
+    # Slippage component — 0 bps = 10, 10 bps = 5, 20+ bps = 0
+    if slippage_bps is not None:
+        slip_score = max(0.0, 10.0 - slippage_bps)
+        score += slip_score * SCORE_WEIGHT_SLIPPAGE
+    else:
+        score += 5.0 * SCORE_WEIGHT_SLIPPAGE  # neutral if no fill data
+
+    # Setup quality component
+    if setup_score is not None:
+        score += min(10.0, setup_score) * SCORE_WEIGHT_SETUP
+    else:
+        score += 5.0 * SCORE_WEIGHT_SETUP  # neutral if not scanned
+
+    return round(score, 2)
+
+
+def _compute_rolling_score(ticker: str, today_score: float) -> float:
+    """
+    Fetch last SCORE_ROLLING_DAYS days of scores and compute weighted average.
+    Recent 2 days get SCORE_RECENT_MULTIPLIER weight.
+    """
+    cutoff = str(date.today() - timedelta(days=SCORE_ROLLING_DAYS))
+    rows = db.select("b_stock_scores", filters={"ticker": ticker})
+    rows = [r for r in rows if str(r.get("date", "")) >= cutoff]
+    rows.sort(key=lambda r: r["date"])
+
+    scores  = [today_score]
+    weights = [SCORE_RECENT_MULTIPLIER]
+
+    for r in rows[-SCORE_ROLLING_DAYS:]:
+        s = r.get("daily_score")
+        if s is not None:
+            d_str  = str(r["date"])
+            age    = (date.today() - date.fromisoformat(d_str)).days
+            weight = SCORE_RECENT_MULTIPLIER if age <= 2 else 1.0
+            scores.append(float(s))
+            weights.append(weight)
+
+    if not scores:
+        return today_score
+
+    return round(sum(s * w for s, w in zip(scores, weights)) / sum(weights), 2)
+
+
+def score_today() -> dict:
+    """
+    Main EOD scoring run.
+    1. Pull today's closed positions from b_positions
+    2. Score each traded stock
+    3. Score untraded Pool 2 stocks (setup quality only)
+    4. Write to b_stock_scores
+    5. Apply pool promotions/demotions
+    """
+    today   = str(date.today())
+    scored  = []
+
+    # --- Scored traded stocks ---
+    closed = db.select("b_positions", filters={"status": "CLOSED"})
+    today_closed = [p for p in closed if str(p.get("closed_at", ""))[:10] == today]
+
+    traded_tickers = set()
+    for pos in today_closed:
+        ticker   = pos["ticker"]
+        pool     = pos.get("pool", 2)
+        entry    = float(pos.get("entry_price") or 0)
+        close_px = float(pos.get("close_price") or 0)
+        pnl      = float(pos.get("realized_pnl") or 0)
+        win      = pnl > 0
+
+        # Slippage: difference between planned entry and actual fill (not tracked precisely yet — use 0)
+        slippage_bps = 0.0
+
+        daily = _compute_daily_score(win, pnl, slippage_bps, None)
+        rolling = _compute_rolling_score(ticker, daily)
+
+        row = {
+            "date":        today,
+            "ticker":      ticker,
+            "pool":        pool,
+            "traded":      True,
+            "win":         win,
+            "pnl":         pnl,
+            "slippage_bps": slippage_bps,
+            "setup_score": None,
+            "daily_score": daily,
+            "rolling_7d":  rolling,
+        }
+        db.upsert("b_stock_scores", row, on_conflict="date,ticker")
+        pool_manager.update_trade_stats(ticker, win, pnl)
+        scored.append({"ticker": ticker, "pool": pool, "rolling_7d": rolling})
+        traded_tickers.add(ticker)
+
+    # --- Score untraded Pool 2 stocks (setup quality = neutral) ---
+    pool2 = pool_manager.get_pool(2)
+    for ticker in pool2:
+        if ticker in traded_tickers:
+            continue
+        daily   = _compute_daily_score(None, None, None, 5.0)  # neutral
+        rolling = _compute_rolling_score(ticker, daily)
+        row = {
+            "date":        today,
+            "ticker":      ticker,
+            "pool":        2,
+            "traded":      False,
+            "win":         None,
+            "pnl":         None,
+            "slippage_bps": None,
+            "setup_score": 5.0,
+            "daily_score": daily,
+            "rolling_7d":  rolling,
+        }
+        db.upsert("b_stock_scores", row, on_conflict="date,ticker")
+        scored.append({"ticker": ticker, "pool": 2, "rolling_7d": rolling})
+
+    # --- Apply promotions/demotions ---
+    changes = pool_manager.apply_promotions_demotions(scored)
+
+    print(f"[pool_scorer] Scored {len(scored)} stocks | "
+          f"Promoted: {changes['promoted']} | Demoted: {changes['demoted']}")
+
+    return {
+        "scored":   len(scored),
+        "traded":   len(traded_tickers),
+        "promoted": changes["promoted"],
+        "demoted":  changes["demoted"],
+    }
+
+
+def write_daily_performance() -> None:
+    """Compute and store daily P&L summary by pool in b_daily_performance."""
+    today   = str(date.today())
+    closed  = db.select("b_positions", filters={"status": "CLOSED"})
+    today_c = [p for p in closed if str(p.get("closed_at", ""))[:10] == today]
+
+    by_pool: dict[int | None, list] = {}
+    for p in today_c:
+        pool = p.get("pool")
+        by_pool.setdefault(pool, []).append(p)
+    by_pool.setdefault(None, today_c)  # total across all pools
+
+    for pool, positions in by_pool.items():
+        wins     = [p for p in positions if (p.get("realized_pnl") or 0) > 0]
+        gross    = sum(p.get("realized_pnl") or 0 for p in positions)
+        n        = len(positions)
+        win_rate = round(len(wins) / n, 4) if n else 0
+        avg_pnl  = round(gross / n, 2) if n else 0
+        # Expectancy = win_rate * avg_win + loss_rate * avg_loss
+        avg_win  = sum(p.get("realized_pnl") or 0 for p in wins) / len(wins) if wins else 0
+        losses   = [p for p in positions if (p.get("realized_pnl") or 0) <= 0]
+        avg_loss = sum(p.get("realized_pnl") or 0 for p in losses) / len(losses) if losses else 0
+        exp      = round(win_rate * avg_win + (1 - win_rate) * avg_loss, 2)
+
+        row = {
+            "date":             today,
+            "pool":             pool,
+            "trades_taken":     n,
+            "wins":             len(wins),
+            "losses":           len(losses),
+            "gross_pnl":        round(gross, 2),
+            "win_rate":         win_rate,
+            "avg_pnl_per_trade": avg_pnl,
+            "expectancy":       exp,
+        }
+        db.upsert("b_daily_performance", row, on_conflict="date,pool")
