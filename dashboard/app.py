@@ -1,8 +1,9 @@
 """
 Strategy B Dashboard — Streamlit app.
 
-Page 1: Today — intraday summary with heatmap, in-flight positions, Claude reasoning
-Page 2: Strategy B — pools, scores, P&L, positions
+Page 0: Summary — KPIs, in-flight positions, trade plan, heatmap
+Page 1: Today — intraday detail with market context, watermarks, 7-day sparkline
+Page 2: Strategy B — pools, scores, P&L history
 """
 import streamlit as st
 import pandas as pd
@@ -13,7 +14,10 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import db
-from config.settings import DASHBOARD_PASSWORD
+from config.settings import (
+    DASHBOARD_PASSWORD, TOTAL_CAPITAL, DAILY_PROFIT_TARGET,
+    DAILY_LOCK_IN_TARGET, DAILY_BONUS_TARGET,
+)
 from config.blue_chips import POOL_2_SEED, SECTOR_MAP
 
 st.set_page_config(page_title="Trading Agent B", page_icon="📊", layout="wide")
@@ -34,7 +38,7 @@ if not _check_password():
     st.stop()
 
 # --- Navigation ---
-page = st.sidebar.radio("View", ["Today", "Strategy B"])
+page = st.sidebar.radio("View", ["Summary", "Today", "Strategy B"])
 
 
 def _fmt_pnl(v: float) -> str:
@@ -46,9 +50,237 @@ def _pnl_color(v: float) -> str:
 
 
 # ============================================================
-# PAGE 0: Today — Daily Summary
+# PAGE 0: Summary
 # ============================================================
-if page == "Today":
+if page == "Summary":
+    today_str = str(date.today())
+
+    plans  = db.select("b_trade_plans", filters={"date": today_str}, limit=1)
+    plan   = plans[0] if plans else None
+    trades = db.select("b_planned_trades", filters={"plan_id": plan["id"]}) if plan else []
+
+    all_open   = db.select("b_positions", filters={"status": "OPEN"})
+    all_closed = db.select("b_positions", filters={"status": "CLOSED"})
+    today_closed = [
+        p for p in all_closed
+        if str(p.get("closed_at", ""))[:10] == today_str
+        and p.get("close_reason") not in ("CLEANUP",)
+    ]
+
+    pos_by_ticker: dict[str, dict] = {}
+    for pos in all_open + today_closed:
+        pos_by_ticker[pos["ticker"]] = pos
+
+    def _sum_status(ticker: str):
+        pos = pos_by_ticker.get(ticker)
+        if pos is None:
+            return "⏳ Pending", 0.0
+        if pos["status"] == "OPEN":
+            return "🟢 In Flight", float(pos.get("unrealized_pnl") or 0)
+        reason = (pos.get("close_reason") or "").upper()
+        pnl = float(pos.get("realized_pnl") or 0)
+        if reason == "TARGET":       return "✅ Target",  pnl
+        if reason == "BONUS_TARGET": return "🎯 Bonus",   pnl
+        if reason == "STOP":         return "🛑 Stop",    pnl
+        if reason == "MANUAL_TRAIL": return "📉 Trail",   pnl
+        if reason == "EOD":          return "⏰ EOD",     pnl
+        return f"⚫ {reason}", pnl
+
+    # --- Financials ---
+    realized   = sum(p.get("realized_pnl", 0) or 0 for p in today_closed)
+    unrealized = sum(p.get("unrealized_pnl", 0) or 0 for p in all_open)
+    total_pnl  = realized + unrealized
+    anticipated = sum(t.get("estimated_profit", 0) or 0 for t in trades
+                      if _sum_status(t["ticker"])[0] != "⏳ Pending")
+
+    all_perf = db.select("b_daily_performance", order="date")
+    all_perf_total = [r for r in all_perf if r.get("pool") is None]
+    cumulative_pnl = sum(r.get("gross_pnl", 0) or 0 for r in all_perf_total)
+    current_capital = TOTAL_CAPITAL + cumulative_pnl
+    pct_return = total_pnl / TOTAL_CAPITAL * 100
+
+    won  = [p for p in today_closed if (p.get("realized_pnl") or 0) > 0]
+    lost = [p for p in today_closed if (p.get("realized_pnl") or 0) <= 0]
+    win_rate = len(won) / len(today_closed) * 100 if today_closed else 0
+
+    executed_trades = [t for t in trades if _sum_status(t["ticker"])[0] != "⏳ Pending"]
+
+    # --- Header ---
+    if plan is None:
+        badge, badge_color = "PENDING", "#7f8c8d"
+    elif plan.get("status") == "HALTED":
+        badge, badge_color = "HALTED", "#c0392b"
+    else:
+        badge, badge_color = "TRADING", "#27ae60"
+
+    h1, h2 = st.columns([4, 1])
+    h1.title(f"Strategy B — Summary — {today_str}")
+    h2.markdown(
+        f"<div style='text-align:right;padding-top:14px'>"
+        f"<span style='background:{badge_color};color:white;padding:6px 14px;"
+        f"border-radius:6px;font-weight:bold;font-size:16px'>{badge}</span></div>",
+        unsafe_allow_html=True,
+    )
+    if plan and plan.get("status") == "HALTED":
+        st.error(f"🛑 Halted — {plan.get('risk_note', '')}")
+
+    st.divider()
+
+    # --- KPI row ---
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric("Capital", f"${current_capital:,.0f}",
+              delta=f"{cumulative_pnl:+,.0f} all-time" if cumulative_pnl != 0 else None,
+              delta_color="normal")
+    k2.metric("Today P&L", _fmt_pnl(total_pnl),
+              delta=f"{pct_return:+.2f}% return",
+              delta_color="normal" if total_pnl >= 0 else "inverse")
+    k3.metric("Realized",   _fmt_pnl(realized))
+    k4.metric("Unrealized", _fmt_pnl(unrealized))
+    k5.metric("Anticipated", f"${anticipated:,.0f}",
+              delta=f"{anticipated/DAILY_PROFIT_TARGET*100:.0f}% of ${DAILY_PROFIT_TARGET:,} target" if anticipated else None,
+              delta_color="normal" if anticipated >= DAILY_PROFIT_TARGET else "inverse")
+    k6.metric("% Return", f"{pct_return:+.2f}%")
+
+    st.divider()
+
+    # --- Trade stats row ---
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("Open Positions", len(all_open))
+    t2.metric("Closed Today",   len(today_closed))
+    t3.metric("Win Rate", f"{win_rate:.0f}%" if today_closed else "—",
+              delta=f"{len(won)}W / {len(lost)}L" if today_closed else None,
+              delta_color="off")
+    t4.metric("Trades Executed", len(executed_trades))
+
+    st.divider()
+
+    # --- In-flight positions ---
+    st.subheader(f"🟢 In Flight — {len(all_open)} position{'s' if len(all_open) != 1 else ''}")
+    if all_open:
+        for pos in all_open:
+            ticker   = pos["ticker"]
+            pool_num = pos.get("pool", "?")
+            entry    = float(pos.get("entry_price") or 0)
+            current  = float(pos.get("current_price") or entry)
+            target   = float(pos.get("target_price") or entry)
+            stop     = float(pos.get("stop_loss") or 0)
+            pnl      = float(pos.get("unrealized_pnl") or 0)
+            icon     = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+            pool_badge = (
+                f"<span style='background:#2980b9;color:white;padding:2px 8px;"
+                f"border-radius:4px;font-size:12px'>P{pool_num}</span>"
+            )
+            sector = SECTOR_MAP.get(ticker, "")
+            label  = f"{ticker} · {sector}" if sector else ticker
+
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 3, 2])
+            c1.markdown(f"**{icon} {label}** {pool_badge}", unsafe_allow_html=True)
+            c2.markdown(f"Entry: **${entry:.2f}**")
+            c3.markdown(f"Now: **${current:.2f}**")
+            c4.markdown(f"Target ${target:.2f}  ·  Stop ${stop:.2f}")
+            c5.markdown(
+                f"<span style='color:{_pnl_color(pnl)};font-weight:bold;font-size:16px'>"
+                f"{_fmt_pnl(pnl)}</span>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.caption("No open positions right now.")
+
+    st.divider()
+
+    # --- Today's plan (executed only) ---
+    st.subheader(f"📋 Today's Plan — {len(executed_trades)} trade{'s' if len(executed_trades) != 1 else ''} executed")
+    if executed_trades:
+        conf_icon = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
+        plan_rows = []
+        for t in executed_trades:
+            status_label, pnl_val = _sum_status(t["ticker"])
+            plan_rows.append({
+                "Status":     status_label,
+                "Pool":       f"P{t.get('pool', '?')}",
+                "Ticker":     t["ticker"],
+                "Sector":     SECTOR_MAP.get(t["ticker"], ""),
+                "Conf.":      f"{conf_icon.get(t.get('confidence',''), '⚪')} {t.get('confidence','')}",
+                "Entry":      f"${float(t.get('entry_price') or 0):,.2f}",
+                "Target":     f"${float(t.get('target_price') or 0):,.2f}",
+                "Stop":       f"${float(t.get('stop_loss') or 0):,.2f}",
+                "Size":       f"${float(t.get('position_size') or 0):,.0f}",
+                "Est. P&L":   f"${float(t.get('estimated_profit') or 0):,.0f}",
+                "Actual P&L": _fmt_pnl(pnl_val) if pnl_val != 0 else "—",
+            })
+        st.dataframe(pd.DataFrame(plan_rows), use_container_width=True, hide_index=True)
+
+        with st.expander("💬 Claude's Reasoning"):
+            for t in executed_trades:
+                conf_clr = "green" if t.get("confidence") == "HIGH" else (
+                           "orange" if t.get("confidence") == "MEDIUM" else "gray")
+                st.markdown(
+                    f"**{t['ticker']}** — "
+                    f"<span style='color:{conf_clr};font-weight:bold'>{t.get('confidence','')}</span>: "
+                    f"{t.get('reasoning') or '—'}",
+                    unsafe_allow_html=True,
+                )
+    elif trades:
+        st.caption(f"Plan ready ({len(trades)} trades) — waiting for market open.")
+    else:
+        st.caption("No trade plan yet.")
+
+    st.divider()
+
+    # --- Trade heatmap ---
+    st.subheader("🗺️ Trade Heatmap — P&L by Stock")
+    heatmap_src = executed_trades or trades
+    if heatmap_src:
+        hm_labels, hm_pnl, hm_size, hm_text, hm_hover = [], [], [], [], []
+        for t in heatmap_src:
+            status_label, pnl_val = _sum_status(t["ticker"])
+            ticker   = t["ticker"]
+            pos_size = float(t.get("position_size") or 5000)
+            hm_labels.append(ticker)
+            hm_pnl.append(pnl_val)
+            hm_size.append(pos_size)
+            hm_text.append(f"{ticker}<br>{_fmt_pnl(pnl_val)}")
+            hm_hover.append(
+                f"<b>{ticker}</b> — {SECTOR_MAP.get(ticker, '')} | Pool {t.get('pool','?')}<br>"
+                f"Status: {status_label}<br>"
+                f"P&L: {_fmt_pnl(pnl_val)}<br>"
+                f"Entry: ${float(t.get('entry_price') or 0):.2f} → Target: ${float(t.get('target_price') or 0):.2f}"
+            )
+
+        fig_hm = go.Figure(go.Treemap(
+            labels=hm_labels,
+            parents=[""] * len(hm_labels),
+            values=hm_size,
+            text=hm_text,
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hm_hover,
+            textinfo="text",
+            marker=dict(
+                colors=hm_pnl,
+                colorscale=[
+                    [0.0, "#c0392b"], [0.45, "#e74c3c"],
+                    [0.5,  "#95a5a6"],
+                    [0.55, "#27ae60"], [1.0,  "#1e8449"],
+                ],
+                cmid=0, showscale=True,
+                colorbar=dict(title="P&L ($)", thickness=12),
+            ),
+        ))
+        fig_hm.update_layout(
+            height=380,
+            margin=dict(l=0, r=0, t=10, b=0),
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
+        st.caption("Block size = position size. Color = P&L (green = profit, red = loss, gray = pending/flat).")
+    else:
+        st.info("No trades to display yet.")
+
+
+# ============================================================
+# PAGE 1: Today — Daily Summary
+# ============================================================
+elif page == "Today":
     today_str = str(date.today())
 
     # Fetch today's plan and trades
