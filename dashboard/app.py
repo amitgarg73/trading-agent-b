@@ -1,8 +1,8 @@
 """
 Strategy B Dashboard — Streamlit app.
 
-Page 1: Strategy B — pools, scores, P&L, positions
-Page 2: A vs B Comparison — side-by-side expectancy, win rate, P&L
+Page 1: Today — intraday summary with heatmap, in-flight positions, Claude reasoning
+Page 2: Strategy B — pools, scores, P&L, positions
 """
 import streamlit as st
 import pandas as pd
@@ -34,11 +34,16 @@ if not _check_password():
     st.stop()
 
 # --- Navigation ---
-page = st.sidebar.radio("View", ["Today", "Strategy B", "A vs B Comparison"])
+page = st.sidebar.radio("View", ["Today", "Strategy B"])
 
 
 def _fmt_pnl(v: float) -> str:
     return f"+${v:,.2f}" if v >= 0 else f"-${abs(v):,.2f}"
+
+
+def _pnl_color(v: float) -> str:
+    return "#2ecc71" if v > 0 else "#e74c3c" if v < 0 else "#95a5a6"
+
 
 # ============================================================
 # PAGE 0: Today — Daily Summary
@@ -46,11 +51,44 @@ def _fmt_pnl(v: float) -> str:
 if page == "Today":
     today_str = str(date.today())
 
-    # Fetch today's plan
+    # Fetch today's plan and trades
     plans = db.select("b_trade_plans", filters={"date": today_str}, limit=1)
     plan  = plans[0] if plans else None
 
-    # Status badge
+    trades = []
+    if plan:
+        trades = db.select("b_planned_trades", filters={"plan_id": plan["id"]})
+
+    open_pos     = db.select("b_positions", filters={"status": "OPEN"})
+    all_closed   = db.select("b_positions", filters={"status": "CLOSED"})
+    today_closed = [
+        p for p in all_closed
+        if str(p.get("closed_at", ""))[:10] == today_str
+        and p.get("close_reason") not in ("CLEANUP",)
+    ]
+
+    # Position lookup by ticker (planned_trade_id not always written)
+    pos_by_ticker: dict[str, dict] = {}
+    for pos in open_pos + today_closed:
+        pos_by_ticker[pos["ticker"]] = pos
+
+    def _trade_status(ticker: str):
+        """Return (status_label, actual_pnl) for a planned trade ticker."""
+        pos = pos_by_ticker.get(ticker)
+        if pos is None:
+            return "⏳ Pending", 0.0
+        if pos["status"] == "OPEN":
+            return "🔵 Open", float(pos.get("unrealized_pnl") or 0)
+        reason = (pos.get("close_reason") or "").upper()
+        pnl = float(pos.get("realized_pnl") or 0)
+        if reason == "TARGET":       return "✅ Target",  pnl
+        if reason == "BONUS_TARGET": return "🎯 Bonus",   pnl
+        if reason == "STOP":         return "🛑 Stop",    pnl
+        if reason == "MANUAL_TRAIL": return "📉 Trail",   pnl
+        if reason == "EOD":          return "🕐 EOD",     pnl
+        return f"⚫ {reason}", pnl
+
+    # --- Status badge ---
     if plan is None:
         badge, badge_color = "PENDING", "#7f8c8d"
     elif plan.get("status") == "HALTED":
@@ -71,15 +109,31 @@ if page == "Today":
 
     st.divider()
 
-    # --- KPI row ---
-    open_pos    = db.select("b_positions", filters={"status": "OPEN"})
-    all_closed  = db.select("b_positions", filters={"status": "CLOSED"})
-    today_closed = [
-        p for p in all_closed
-        if str(p.get("closed_at", ""))[:10] == today_str
-        and p.get("close_reason") not in ("CLEANUP",)
-    ]
+    # --- Market context ---
+    today_perf_rows = db.select("b_daily_performance", filters={"date": today_str})
+    today_perf = next((r for r in today_perf_rows if r.get("pool") is None), None)
+    if today_perf:
+        vix     = today_perf.get("vix_level")
+        fg      = today_perf.get("fear_greed")
+        spy_chg = today_perf.get("spy_change_pct")
+        regime  = today_perf.get("regime_label") or "—"
+        regime_colors = {
+            "TREND":    "#27ae60", "CHOPPY": "#e67e22",
+            "HIGH_VOL": "#e74c3c", "FEAR":   "#8e44ad",
+        }
+        rc = regime_colors.get(regime, "#7f8c8d")
+        spy_str = f"{spy_chg:+.2f}%" if spy_chg is not None else "—"
+        st.markdown(
+            f"**Market Context:** "
+            f"VIX `{vix or '—'}` | Fear & Greed `{fg or '—'}` | "
+            f"SPY `{spy_str}` | "
+            f"Regime <span style='background:{rc};color:white;padding:2px 8px;"
+            f"border-radius:4px;font-weight:bold'>{regime}</span>",
+            unsafe_allow_html=True,
+        )
+        st.divider()
 
+    # --- KPI row ---
     realized   = sum(p.get("realized_pnl", 0) or 0 for p in today_closed)
     unrealized = sum(p.get("unrealized_pnl", 0) or 0 for p in open_pos)
     total_pnl  = realized + unrealized
@@ -88,16 +142,16 @@ if page == "Today":
     pool3      = plan.get("pool3_tickers") or [] if plan else []
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Today P&L",    _fmt_pnl(total_pnl),
+    k1.metric("Today P&L",      _fmt_pnl(total_pnl),
               delta=f"{total_pnl/50_000*100:+.2f}% of capital",
               delta_color="normal" if total_pnl >= 0 else "inverse")
-    k2.metric("Realized",     _fmt_pnl(realized))
-    k3.metric("Unrealized",   _fmt_pnl(unrealized))
-    k4.metric("Win Rate",     f"{win_rate:.0f}%" if today_closed else "—",
+    k2.metric("Realized",        _fmt_pnl(realized))
+    k3.metric("Unrealized",      _fmt_pnl(unrealized))
+    k4.metric("Win Rate",        f"{win_rate:.0f}%" if today_closed else "—",
               delta=f"{len(wins)}W / {len(today_closed)-len(wins)}L" if today_closed else None,
               delta_color="off")
-    k5.metric("Open Positions", len(open_pos))
-    k6.metric("Pool 3 Picks",   len(pool3))
+    k5.metric("Open Positions",  len(open_pos))
+    k6.metric("Pool 3 Picks",    len(pool3))
 
     st.divider()
 
@@ -109,14 +163,124 @@ if page == "Today":
             cols[i % 5].metric(t, SECTOR_MAP.get(t, "—"))
         st.divider()
 
-    # --- Open positions ---
+    # --- Trade plan table ---
+    if trades:
+        st.subheader("Today's Trade Plan")
+        conf_icon = {"HIGH": "🟢", "MEDIUM": "🟡", "LOW": "🔴"}
+        rows = []
+        for t in trades:
+            status_label, actual_pnl = _trade_status(t["ticker"])
+            rows.append({
+                "Pool":        f"P{t.get('pool', '?')}",
+                "Ticker":      t["ticker"],
+                "Conf":        f"{conf_icon.get(t.get('confidence',''), '⚪')} {t.get('confidence','')}",
+                "Entry":       f"${float(t.get('entry_price') or 0):,.2f}",
+                "Target":      f"${float(t.get('target_price') or 0):,.2f}",
+                "Stop":        f"${float(t.get('stop_loss') or 0):,.2f}",
+                "Shares":      t.get("shares", "—"),
+                "Est. Profit": f"${float(t.get('estimated_profit') or 0):,.0f}",
+                "Status":      status_label,
+                "Actual P&L":  _fmt_pnl(actual_pnl) if actual_pnl != 0 else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        # --- Claude's reasoning ---
+        with st.expander("💬 Claude's Reasoning per Trade"):
+            for t in trades:
+                confidence = t.get("confidence", "")
+                conf_clr   = "green" if confidence == "HIGH" else ("orange" if confidence == "MEDIUM" else "gray")
+                reasoning  = t.get("reasoning") or "No reasoning recorded"
+                st.markdown(
+                    f"**{t['ticker']}** — "
+                    f"<span style='color:{conf_clr};font-weight:bold'>{confidence}</span>: {reasoning}",
+                    unsafe_allow_html=True,
+                )
+
+        st.divider()
+
+    # --- Position Heatmap ---
+    all_today_pos = open_pos + today_closed
+    if all_today_pos:
+        st.subheader("Position Heatmap")
+        hm_labels, hm_size, hm_pnl, hm_text, hm_hover = [], [], [], [], []
+        for pos in all_today_pos:
+            ticker   = pos["ticker"]
+            pos_size = float(pos.get("position_size") or 1)
+            pnl      = (float(pos.get("unrealized_pnl") or 0) if pos["status"] == "OPEN"
+                        else float(pos.get("realized_pnl") or 0))
+            status   = pos.get("status", "")
+            hm_labels.append(ticker)
+            hm_size.append(max(pos_size, 1))
+            hm_pnl.append(pnl)
+            hm_text.append(f"{ticker}\n{_fmt_pnl(pnl)}")
+            hm_hover.append(f"{ticker} | Pool {pos.get('pool','?')} | {status}<br>P&L: {_fmt_pnl(pnl)}")
+
+        fig_hm = go.Figure(go.Treemap(
+            labels=hm_labels,
+            parents=[""] * len(hm_labels),
+            values=hm_size,
+            text=hm_text,
+            hovertemplate="%{customdata}<extra></extra>",
+            customdata=hm_hover,
+            textinfo="text",
+            marker=dict(
+                colors=hm_pnl,
+                colorscale=[
+                    [0.0, "#c0392b"], [0.45, "#e74c3c"],
+                    [0.5,  "#95a5a6"],
+                    [0.55, "#27ae60"], [1.0,  "#1e8449"],
+                ],
+                cmid=0, showscale=True,
+                colorbar=dict(title="P&L ($)", thickness=12),
+            ),
+        ))
+        fig_hm.update_layout(
+            margin=dict(t=30, l=10, r=10, b=10),
+            template="plotly_dark", height=280,
+        )
+        st.plotly_chart(fig_hm, use_container_width=True)
+        st.divider()
+
+    # --- In-flight position cards ---
     if open_pos:
-        st.subheader("Open Positions")
-        df_open = pd.DataFrame(open_pos)
-        show_open = ["ticker", "pool", "entry_price", "fill_price", "target_price",
-                     "stop_loss", "shares", "unrealized_pnl", "high_watermark", "low_watermark"]
-        show_open = [c for c in show_open if c in df_open.columns]
-        st.dataframe(df_open[show_open], use_container_width=True, hide_index=True)
+        st.subheader(f"In-Flight Positions ({len(open_pos)} open)")
+        for pos in open_pos:
+            ticker   = pos["ticker"]
+            pool_num = pos.get("pool", "?")
+            entry    = float(pos.get("entry_price") or 0)
+            current  = float(pos.get("current_price") or entry)
+            target   = float(pos.get("target_price") or entry)
+            stop     = float(pos.get("stop_loss") or 0)
+            shares   = int(pos.get("shares") or 0)
+            pnl      = float(pos.get("unrealized_pnl") or 0)
+            high_wm  = float(pos.get("high_watermark") or entry)
+            low_wm   = float(pos.get("low_watermark") or entry)
+
+            icon       = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+            pool_badge = (f"<span style='background:#2980b9;color:white;padding:2px 8px;"
+                          f"border-radius:4px;font-size:12px'>P{pool_num}</span>")
+
+            c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 3, 2])
+            c1.markdown(f"**{icon} {ticker}** {pool_badge}", unsafe_allow_html=True)
+            c2.markdown(f"Entry: **${entry:.2f}**")
+            c3.markdown(f"Now: **${current:.2f}**")
+            c4.markdown(f"Target: **${target:.2f}** | Stop: ${stop:.2f}")
+            c5.markdown(
+                f"<span style='color:{_pnl_color(pnl)};font-weight:bold'>{_fmt_pnl(pnl)}</span>",
+                unsafe_allow_html=True,
+            )
+
+            # Progress bar: entry → current → target
+            if target > entry:
+                progress = max(0.0, min(1.0, (current - entry) / (target - entry)))
+            else:
+                progress = 0.0
+            st.progress(
+                progress,
+                text=(f"Entry ${entry:.2f} → Target ${target:.2f}  |  "
+                      f"High: ${high_wm:.2f}  Low: ${low_wm:.2f}  |  {shares} shares"),
+            )
+
         st.divider()
 
     # --- Closed positions today ---
@@ -140,13 +304,12 @@ if page == "Today":
         else:
             st.dataframe(df_cl_show, use_container_width=True, hide_index=True)
 
-        # MAE/MFE insight
         if "mae" in df_cl.columns and "mfe" in df_cl.columns:
             avg_mae = df_cl["mae"].mean()
             avg_mfe = df_cl["mfe"].mean()
             m1, m2 = st.columns(2)
             m1.metric("Avg MAE (adverse excursion)", f"${avg_mae:,.2f}" if avg_mae else "—",
-                      help="How far against us positions moved before closing. High MAE on losers = stops may be too tight.")
+                      help="How far against us positions moved. High MAE on losers = stops may be too tight.")
             m2.metric("Avg MFE (favorable excursion)", f"${avg_mfe:,.2f}" if avg_mfe else "—",
                       help="How far in our favour positions moved. High MFE on losers = targets may be too conservative.")
         st.divider()
@@ -163,7 +326,6 @@ if page == "Today":
         df_perf = df_perf.sort_values("date")
         df_perf["cumulative"] = df_perf["gross_pnl"].cumsum()
 
-        import plotly.graph_objects as go
         fig = go.Figure()
         colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in df_perf["gross_pnl"]]
         fig.add_trace(go.Bar(
@@ -183,16 +345,14 @@ if page == "Today":
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # Summary stats
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("7-day P&L",   _fmt_pnl(df_perf["gross_pnl"].sum()))
-        s2.metric("Win Days",    f"{(df_perf['gross_pnl'] > 0).sum()}/{len(df_perf)}")
-        s3.metric("Avg Win Rate", f"{df_perf['win_rate'].mean()*100:.0f}%" if "win_rate" in df_perf else "—")
-        s4.metric("Avg Expectancy", f"${df_perf['expectancy'].mean():,.2f}" if "expectancy" in df_perf else "—")
+        s1.metric("7-day P&L",      _fmt_pnl(df_perf["gross_pnl"].sum()))
+        s2.metric("Win Days",        f"{(df_perf['gross_pnl'] > 0).sum()}/{len(df_perf)}")
+        s3.metric("Avg Win Rate",    f"{df_perf['win_rate'].mean()*100:.0f}%" if "win_rate" in df_perf.columns else "—")
+        s4.metric("Avg Expectancy",  f"${df_perf['expectancy'].mean():,.2f}" if "expectancy" in df_perf.columns else "—")
     else:
         st.info("No performance history yet — runs after first EOD")
 
-    # --- Halt reason (if halted) ---
     if plan and plan.get("status") == "HALTED":
         st.divider()
         st.warning(f"**Halt reason:** {plan.get('risk_note', 'No details recorded')}")
@@ -201,7 +361,7 @@ if page == "Today":
 # ============================================================
 # PAGE 1: Strategy B
 # ============================================================
-if page == "Strategy B":
+elif page == "Strategy B":
     st.title("Trading Agent B — Blue Chip Pool Strategy")
     st.caption(f"Today: {date.today()} | Universe: {len(POOL_2_SEED)} blue chip seed stocks")
 
@@ -270,7 +430,6 @@ if page == "Strategy B":
             col2.metric("Win Rate", f"{latest.get('win_rate', 0)*100:.0f}%")
             col3.metric("Expectancy / Trade", f"${latest.get('expectancy', 0):,.2f}")
 
-        # P&L by pool chart
         df_pool = df_perf[df_perf["pool"].notna()].copy()
         if not df_pool.empty:
             fig = px.bar(
@@ -280,7 +439,6 @@ if page == "Strategy B":
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # Regime observation table
         if "regime_label" in df_perf_total.columns:
             st.subheader("Regime Log — Passive Observation")
             st.caption("No trades are blocked by regime yet. This data will tell us whether to add a gate after 30 days.")
@@ -289,19 +447,9 @@ if page == "Strategy B":
             available = [c for c in regime_cols if c in df_perf_total.columns]
             df_regime = df_perf_total[available].sort_values("date", ascending=False)
             df_regime.columns = [c.replace("_", " ").title() for c in df_regime.columns]
-
-            # Color rows by regime
-            def _color_regime(val):
-                colors = {"FEAR": "background-color: #5c1a1a",
-                          "HIGH_VOL": "background-color: #4a3800",
-                          "TREND": "background-color: #1a3a1a",
-                          "CHOPPY": "background-color: #1a1a3a"}
-                return colors.get(val, "")
-
             st.dataframe(df_regime, use_container_width=True, hide_index=True)
 
-            # P&L by regime summary
-            if "regime_label" in df_perf_total.columns and not df_perf_total.empty:
+            if not df_perf_total.empty:
                 regime_summary = df_perf_total.groupby("regime_label").agg(
                     days=("date", "count"),
                     total_pnl=("gross_pnl", "sum"),
@@ -327,134 +475,3 @@ if page == "Strategy B":
         st.dataframe(df_sc[show], use_container_width=True, hide_index=True)
     else:
         st.info("No scores yet — runs after first EOD")
-
-
-# ============================================================
-# PAGE 2: A vs B Comparison
-# ============================================================
-else:
-    st.title("Strategy A vs Strategy B — Comparison")
-    st.caption("Same capital, same Alpaca account, same time period — which selection approach wins?")
-
-    days = st.sidebar.slider("Lookback (days)", 7, 60, 14)
-    cutoff = str(date.today() - timedelta(days=days))
-
-    # --- Fetch Strategy B performance ---
-    b_perf = db.select("b_daily_performance")
-    b_total = [r for r in b_perf if r.get("pool") is None and str(r.get("date","")) >= cutoff]
-
-    # --- Fetch Strategy A performance (positions table, no b_ prefix) ---
-    try:
-        a_positions = db.select("positions", filters={"status": "CLOSED"})
-        a_positions = [p for p in a_positions if str(p.get("closed_at",""))[:10] >= cutoff]
-    except Exception:
-        a_positions = []
-
-    # Build Strategy A daily P&L
-    a_by_date: dict[str, list] = {}
-    for p in a_positions:
-        d = str(p.get("closed_at",""))[:10]
-        a_by_date.setdefault(d, []).append(p)
-
-    a_daily = []
-    for d, positions in sorted(a_by_date.items()):
-        wins   = [p for p in positions if (p.get("realized_pnl") or 0) > 0]
-        gross  = sum(p.get("realized_pnl") or 0 for p in positions)
-        n      = len(positions)
-        a_daily.append({
-            "date":      d,
-            "strategy":  "A",
-            "gross_pnl": round(gross, 2),
-            "trades":    n,
-            "wins":      len(wins),
-            "win_rate":  round(len(wins)/n, 2) if n else 0,
-        })
-
-    b_daily = [{
-        "date":      str(r["date"]),
-        "strategy":  "B",
-        "gross_pnl": r.get("gross_pnl", 0),
-        "trades":    r.get("trades_taken", 0),
-        "wins":      r.get("wins", 0),
-        "win_rate":  r.get("win_rate", 0),
-    } for r in b_total]
-
-    combined = pd.DataFrame(a_daily + b_daily)
-
-    if combined.empty:
-        st.info("No comparison data yet — both strategies need live trading data")
-        st.stop()
-
-    combined["date"] = pd.to_datetime(combined["date"])
-
-    # --- Summary metrics ---
-    st.subheader("Summary Metrics")
-    col1, col2 = st.columns(2)
-
-    for strat, col in [("A", col1), ("B", col2)]:
-        df_s = combined[combined["strategy"] == strat]
-        total_pnl  = df_s["gross_pnl"].sum()
-        total_trades = df_s["trades"].sum()
-        avg_win_rate = df_s["win_rate"].mean()
-        avg_pnl  = total_pnl / total_trades if total_trades > 0 else 0
-        col.markdown(f"### Strategy {strat}")
-        col.metric("Total P&L", f"${total_pnl:,.2f}")
-        col.metric("Total Trades", int(total_trades))
-        col.metric("Avg Win Rate", f"{avg_win_rate*100:.0f}%")
-        col.metric("Avg P&L / Trade", f"${avg_pnl:,.2f}")
-
-    st.divider()
-
-    # --- Cumulative P&L chart ---
-    st.subheader("Cumulative P&L")
-    fig = go.Figure()
-    for strat, color in [("A", "#1f77b4"), ("B", "#ff7f0e")]:
-        df_s = combined[combined["strategy"] == strat].sort_values("date")
-        df_s["cumulative"] = df_s["gross_pnl"].cumsum()
-        fig.add_trace(go.Scatter(
-            x=df_s["date"], y=df_s["cumulative"],
-            mode="lines+markers", name=f"Strategy {strat}",
-            line=dict(color=color, width=2),
-        ))
-    fig.update_layout(
-        title="Cumulative P&L: Strategy A vs B",
-        xaxis_title="Date", yaxis_title="P&L ($)",
-        template="plotly_dark",
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # --- Win rate comparison ---
-    st.subheader("Daily Win Rate")
-    fig2 = px.line(
-        combined, x="date", y="win_rate", color="strategy",
-        title="Daily Win Rate: A vs B",
-        labels={"win_rate": "Win Rate", "strategy": "Strategy"},
-        color_discrete_map={"A": "#1f77b4", "B": "#ff7f0e"},
-        template="plotly_dark",
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-
-    # --- Daily trades count ---
-    st.subheader("Trades Per Day")
-    fig3 = px.bar(
-        combined, x="date", y="trades", color="strategy",
-        barmode="group", title="Trades Per Day: A vs B",
-        color_discrete_map={"A": "#1f77b4", "B": "#ff7f0e"},
-        template="plotly_dark",
-    )
-    st.plotly_chart(fig3, use_container_width=True)
-
-    # --- Strategy B pool breakdown ---
-    st.subheader("Strategy B — P&L by Pool")
-    b_pool = [r for r in b_perf if r.get("pool") is not None and str(r.get("date","")) >= cutoff]
-    if b_pool:
-        df_bp = pd.DataFrame(b_pool)
-        df_bp["date"] = pd.to_datetime(df_bp["date"])
-        fig4 = px.bar(
-            df_bp, x="date", y="gross_pnl", color="pool",
-            barmode="group", title="Strategy B P&L by Pool (1=Broad, 2=Blue Chips, 3=Elite)",
-            template="plotly_dark",
-        )
-        st.plotly_chart(fig4, use_container_width=True)
-    else:
-        st.info("Pool breakdown data available after first EOD run")
