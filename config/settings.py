@@ -14,8 +14,8 @@ DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "changeme")
 STRATEGY_TAG = "b"   # tag on every Alpaca order and Supabase row
 
 # Capital — same as Strategy A for fair comparison
-TOTAL_CAPITAL        = 100_000
-DAILY_PROFIT_TARGET  = 1_000
+TOTAL_CAPITAL        = 50_000
+DAILY_PROFIT_TARGET  = 500
 MAX_POSITION_PCT     = 0.07
 MIN_POSITION_PCT     = 0.05
 MAX_POSITIONS        = 10           # fewer positions — blue chip focus
@@ -33,9 +33,9 @@ PARTIAL_PROFIT_ENABLED = True
 PARTIAL_PROFIT_PCT   = 0.01
 
 POSITION_SIZE_BY_CONFIDENCE = {
-    "HIGH":   7_000,
-    "MEDIUM": 6_000,
-    "LOW":    5_000,
+    "HIGH":   3_500,
+    "MEDIUM": 3_000,
+    "LOW":    2_500,
 }
 
 # Scanner thresholds — tighter for blue chip quality
