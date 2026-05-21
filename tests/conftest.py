@@ -5,6 +5,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from unittest.mock import MagicMock, patch
+from config.settings import POSITION_SIZE_BY_CONFIDENCE, TOTAL_CAPITAL
 
 
 @pytest.fixture
@@ -55,7 +56,8 @@ def valid_trade() -> dict:
     entry  = 185.00
     target = round(entry * 1.02, 2)
     stop   = round(entry * (1 - 0.0067), 2)
-    shares = int(7000 / entry)
+    sz     = POSITION_SIZE_BY_CONFIDENCE["HIGH"]
+    shares = int(sz / entry)
     profit = round(shares * (target - entry), 2)
     loss   = round(shares * (entry - stop), 2)
     return {
@@ -65,7 +67,7 @@ def valid_trade() -> dict:
         "entry_price":     entry,
         "target_price":    target,
         "stop_loss":       stop,
-        "position_size":   7000,
+        "position_size":   sz,
         "shares":          shares,
         "estimated_profit": profit,
         "max_loss":        loss,

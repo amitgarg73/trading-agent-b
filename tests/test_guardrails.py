@@ -2,14 +2,15 @@
 import pytest
 from unittest.mock import patch
 from agents.guardrails import check, _validate
-from config.settings import TARGET_PCT, MAX_LOSS_PER_TRADE, MIN_REWARD_RISK
+from config.settings import TARGET_PCT, MAX_LOSS_PER_TRADE, MIN_REWARD_RISK, POSITION_SIZE_BY_CONFIDENCE
 
 
 def _make_trade(**overrides) -> dict:
     entry  = 100.00
     target = round(entry * (1 + TARGET_PCT), 2)
     stop   = round(entry * (1 - MAX_LOSS_PER_TRADE), 2)
-    shares = 70
+    sz     = POSITION_SIZE_BY_CONFIDENCE["HIGH"]
+    shares = int(sz / entry)
     profit = round(shares * (target - entry), 2)
     loss   = round(shares * (entry - stop), 2)
     base = {
@@ -18,7 +19,7 @@ def _make_trade(**overrides) -> dict:
         "entry_price":      entry,
         "target_price":     target,
         "stop_loss":        stop,
-        "position_size":    7000,
+        "position_size":    sz,
         "shares":           shares,
         "estimated_profit": profit,
         "max_loss":         loss,
@@ -106,7 +107,7 @@ def test_stale_price_rejected(mock_price, mock_bp, mock_traded):
 @patch("agents.guardrails._get_buying_power", return_value=100.0)  # only $100 available
 @patch("agents.guardrails._current_price", return_value=100.00)
 def test_insufficient_buying_power_rejected(mock_price, mock_bp, mock_traded):
-    passed, rejected = check([_make_trade(position_size=7000)])
+    passed, rejected = check([_make_trade(position_size=POSITION_SIZE_BY_CONFIDENCE["HIGH"])])
     assert len(passed) == 0
     assert any("capital" in r.lower() for r in rejected)
 
