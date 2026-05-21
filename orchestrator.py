@@ -271,6 +271,19 @@ def premarket(broker: str = "alpaca") -> None:
     if _is_halted():
         return
 
+    # Morning sweep — close any overnight Alpaca positions before trading begins
+    from agents.alpaca_broker import get_open_tickers as _get_open_tickers, _get as _alpaca_client
+    overnight = _get_open_tickers()
+    if overnight:
+        print(f"  ⚠️  OVERNIGHT POSITIONS DETECTED: {overnight}")
+        print(f"  Closing before day trading begins...\n")
+        try:
+            _alpaca_client().cancel_orders()
+        except Exception:
+            pass
+        swept = close_all_positions(reason="OVERNIGHT_SWEEP")
+        print(f"  Swept {len(swept)} overnight position(s). These will appear in today's Alpaca equity delta.\n")
+
     seed_pools_if_empty()
 
     # 1. Select Pool 3 for today
