@@ -268,9 +268,6 @@ def get_pool3_tickers() -> list[str]:
 
     metrics = []
     for ticker in pool2:
-        if _has_earnings_soon(ticker):
-            print(f"[pool_filter] {ticker} excluded — earnings within {POOL3_EARNINGS_DAYS} days")
-            continue
         m = _realtime_metrics(ticker)
         if m and m["vol_ratio"] >= POOL3_MIN_VOL_RATIO:
             m["filter_score"] = _filter_score(m)
@@ -292,8 +289,6 @@ def get_pool3_with_context() -> list[dict]:
 
     metrics = []
     for ticker in pool2:
-        if _has_earnings_soon(ticker):
-            continue
         m = _realtime_metrics(ticker)
         if m and m["vol_ratio"] >= POOL3_MIN_VOL_RATIO:
             m["filter_score"] = _filter_score(m)
