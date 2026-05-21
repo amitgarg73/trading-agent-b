@@ -610,37 +610,47 @@ elif page == "Today":
     elif plan:
         st.info("No closed positions yet today")
 
-    # --- 7-day P&L sparkline ---
-    st.subheader("Last 7 Trading Days")
-    perf = db.select("b_daily_performance", order="date", limit=7)
+    # --- Performance history table (always shown when data exists) ---
+    st.subheader("Trading History")
+    perf = db.select("b_daily_performance", order="date", limit=30)
     perf_total = [r for r in perf if r.get("pool") is None]
     if perf_total:
-        df_perf = pd.DataFrame(perf_total)
-        df_perf["date"] = pd.to_datetime(df_perf["date"])
-        df_perf = df_perf.sort_values("date")
-        df_perf["cumulative"] = df_perf["gross_pnl"].cumsum()
+        df_perf = pd.DataFrame(perf_total).sort_values("date", ascending=False)
+        _hist_rows = []
+        for _, _pr in df_perf.iterrows():
+            _wr = (_pr.get("win_rate") or 0) * 100
+            _hist_rows.append({
+                "Date":       str(_pr["date"])[:10],
+                "P&L":        _fmt_pnl(_pr.get("gross_pnl", 0) or 0),
+                "Trades":     int(_pr.get("trades_taken", 0) or 0),
+                "Win %":      f"{_wr:.0f}%",
+                "Expectancy": f"${_pr.get('expectancy', 0) or 0:,.2f}",
+            })
+        st.dataframe(pd.DataFrame(_hist_rows), use_container_width=True, hide_index=True)
 
-        fig = go.Figure()
-        colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in df_perf["gross_pnl"]]
-        fig.add_trace(go.Bar(
-            x=df_perf["date"], y=df_perf["gross_pnl"],
-            marker_color=colors, name="Daily P&L",
-        ))
-        fig.add_trace(go.Scatter(
-            x=df_perf["date"], y=df_perf["cumulative"],
-            mode="lines+markers", name="Cumulative",
-            line=dict(color="#3498db", width=2), yaxis="y2",
-        ))
-        fig.update_layout(
-            title="Daily P&L (bars) + Cumulative (line)",
-            yaxis=dict(title="Daily P&L ($)"),
-            yaxis2=dict(title="Cumulative ($)", overlaying="y", side="right"),
-            template="plotly_dark", height=350,
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        _n_days = len(df_perf)
+        if _n_days < 5:
+            st.info(f"📊 **{_n_days} trading day{'s' if _n_days != 1 else ''} recorded** — scorecard and trends become meaningful at 5+ days.")
+        else:
+            df_perf_sorted = df_perf.sort_values("date")
+            df_perf_sorted["cumulative"] = df_perf_sorted["gross_pnl"].cumsum()
+            fig = go.Figure()
+            colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in df_perf_sorted["gross_pnl"]]
+            fig.add_trace(go.Bar(x=df_perf_sorted["date"], y=df_perf_sorted["gross_pnl"],
+                                 marker_color=colors, name="Daily P&L"))
+            fig.add_trace(go.Scatter(x=df_perf_sorted["date"], y=df_perf_sorted["cumulative"],
+                                     mode="lines+markers", name="Cumulative",
+                                     line=dict(color="#3498db", width=2), yaxis="y2"))
+            fig.update_layout(
+                title="Daily P&L (bars) + Cumulative (line)",
+                yaxis=dict(title="Daily P&L ($)"),
+                yaxis2=dict(title="Cumulative ($)", overlaying="y", side="right"),
+                template="plotly_dark", height=300,
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         s1, s2, s3, s4 = st.columns(4)
-        s1.metric("7-day P&L",      _fmt_pnl(df_perf["gross_pnl"].sum()))
+        s1.metric("Total P&L",      _fmt_pnl(df_perf["gross_pnl"].sum()))
         s2.metric("Win Days",        f"{(df_perf['gross_pnl'] > 0).sum()}/{len(df_perf)}")
         s3.metric("Avg Win Rate",    f"{df_perf['win_rate'].mean()*100:.0f}%" if "win_rate" in df_perf.columns else "—")
         s4.metric("Avg Expectancy",  f"${df_perf['expectancy'].mean():,.2f}" if "expectancy" in df_perf.columns else "—")
