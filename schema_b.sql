@@ -133,11 +133,11 @@ alter table b_positions add column if not exists mfe numeric;
 create table if not exists b_scan_results (
     id          serial primary key,
     date        text not null,
+    scan_type   text not null default 'intraday_scan',
     scanned_at  text not null,
-    scan_count  int  not null default 0,
     candidates  int  not null default 0,
     placed      int  not null default 0,
-    summary     text
+    results     jsonb
 );
 create index if not exists idx_b_scan_results_date on b_scan_results(date);
 

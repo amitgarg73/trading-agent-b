@@ -77,9 +77,12 @@ def _load_intraday_scans(today: str) -> list[dict]:
 def _save_intraday_scan(today: str, now_utc: datetime, result: dict) -> None:
     try:
         db.insert("b_scan_results", {
-            "date":      today,
-            "scan_type": "intraday_scan",
-            "results":   {**result, "scanned_at": now_utc.isoformat()},
+            "date":       today,
+            "scan_type":  "intraday_scan",
+            "scanned_at": now_utc.isoformat(),
+            "candidates": result.get("candidates", 0),
+            "placed":     result.get("placed", 0),
+            "results":    result,
         })
     except Exception:
         pass  # non-blocking — scan tracking is best-effort
