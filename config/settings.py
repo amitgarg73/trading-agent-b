@@ -49,7 +49,7 @@ SCORE_THRESHOLD      = 1
 # Intraday scan windows
 INTRADAY_SCAN_UTC_START         = 15
 INTRADAY_SCAN_UTC_END           = 18
-INTRADAY_SCAN_MAX_RUNS          = 2
+INTRADAY_SCAN_MAX_RUNS          = 3
 INTRADAY_SCAN_MIN_INTERVAL_MINS = 90
 INTRADAY_TARGET_PCT             = 0.01
 MIN_INTRADAY_MOVE_PCT           = 2.0   # lower bar for blue chips — less volatile
