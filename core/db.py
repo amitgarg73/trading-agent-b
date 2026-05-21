@@ -22,7 +22,7 @@ def select(table: str, filters: dict | None = None,
            order: str | None = None, limit: int | None = None) -> list[dict]:
     q = _get().table(table).select("*")
     for k, v in (filters or {}).items():
-        q = q.eq(k, v)
+        q = q.is_(k, "null") if v is None else q.eq(k, v)
     if order:
         q = q.order(order, desc=True)
     if limit:
