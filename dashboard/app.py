@@ -13,6 +13,10 @@ from datetime import date, datetime, timedelta
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+for _key in ["ANTHROPIC_API_KEY", "SUPABASE_URL", "SUPABASE_KEY", "DASHBOARD_PASSWORD"]:
+    if _key in st.secrets:
+        os.environ[_key] = st.secrets[_key]
+
 from core import db
 from config.settings import (
     DASHBOARD_PASSWORD, TOTAL_CAPITAL, DAILY_PROFIT_TARGET,
@@ -27,11 +31,12 @@ def _check_password() -> bool:
     if st.session_state.get("authenticated"):
         return True
     pwd = st.sidebar.text_input("Password", type="password")
-    if pwd == DASHBOARD_PASSWORD:
-        st.session_state["authenticated"] = True
-        return True
-    if pwd:
-        st.sidebar.error("Wrong password")
+    if st.sidebar.button("Login"):
+        if pwd == DASHBOARD_PASSWORD:
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.sidebar.error("Wrong password")
     return False
 
 if not _check_password():

@@ -12,3 +12,4 @@ venv/
 models/*.pkl
 models/*.json
 *.log
+.streamlit/secrets.toml
