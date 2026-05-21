@@ -243,7 +243,7 @@ if page == "Summary":
                 unsafe_allow_html=True,
             )
     else:
-        st.caption("No open positions right now.")
+        st.markdown("No open positions right now.")
 
     st.divider()
 
@@ -280,60 +280,10 @@ if page == "Summary":
                     unsafe_allow_html=True,
                 )
     elif trades:
-        st.caption(f"Plan ready ({len(trades)} trades) — waiting for market open.")
+        st.info(f"Plan ready — {len(trades)} trades selected, waiting for market open.")
     else:
-        st.caption("No trade plan yet.")
+        st.markdown("No trade plan yet.")
 
-    st.divider()
-
-    # --- Trade heatmap ---
-    st.subheader("🗺️ Trade Heatmap — P&L by Stock")
-    heatmap_src = executed_trades or trades
-    if heatmap_src:
-        hm_labels, hm_pnl, hm_size, hm_text, hm_hover = [], [], [], [], []
-        for t in heatmap_src:
-            status_label, pnl_val = _sum_status(t["ticker"])
-            ticker   = t["ticker"]
-            pos_size = float(t.get("position_size") or 5000)
-            hm_labels.append(ticker)
-            hm_pnl.append(pnl_val)
-            hm_size.append(pos_size)
-            hm_text.append(f"{ticker}<br>{_fmt_pnl(pnl_val)}")
-            hm_hover.append(
-                f"<b>{ticker}</b> — {SECTOR_MAP.get(ticker, '')} | Pool {t.get('pool','?')}<br>"
-                f"Status: {status_label}<br>"
-                f"P&L: {_fmt_pnl(pnl_val)}<br>"
-                f"Entry: ${float(t.get('entry_price') or 0):.2f} → Target: ${float(t.get('target_price') or 0):.2f}"
-            )
-
-        fig_hm = go.Figure(go.Treemap(
-            labels=hm_labels,
-            parents=[""] * len(hm_labels),
-            values=hm_size,
-            text=hm_text,
-            hovertemplate="%{customdata}<extra></extra>",
-            customdata=hm_hover,
-            textinfo="text",
-            marker=dict(
-                colors=hm_pnl,
-                colorscale=[
-                    [0.0, "#c0392b"], [0.45, "#e74c3c"],
-                    [0.5,  "#95a5a6"],
-                    [0.55, "#27ae60"], [1.0,  "#1e8449"],
-                ],
-                cmid=0, showscale=True,
-                colorbar=dict(title="P&L ($)", thickness=12),
-            ),
-        ))
-        fig_hm.update_layout(
-            height=380,
-            margin=dict(l=0, r=0, t=10, b=0),
-            paper_bgcolor="rgba(0,0,0,0)",
-        )
-        st.plotly_chart(fig_hm, use_container_width=True)
-        st.caption("Block size = position size. Color = P&L (green = profit, red = loss, gray = pending/flat).")
-    else:
-        st.info("No trades to display yet.")
 
 
 # ============================================================
@@ -667,7 +617,7 @@ elif page == "Today":
 # ============================================================
 elif page == "Strategy B":
     st.title("Trading Agent B — Blue Chip Pool Strategy")
-    st.caption(f"Today: {date.today()} | Universe: {len(POOL_2_SEED)} blue chip seed stocks")
+    st.markdown(f"Today: {date.today()} | Universe: {len(POOL_2_SEED)} blue chip seed stocks")
 
     # --- Today's Pool 3 ---
     st.subheader("Today's Pool 3 — Daily Elite Picks")
@@ -745,7 +695,7 @@ elif page == "Strategy B":
 
         if "regime_label" in df_perf_total.columns:
             st.subheader("Regime Log — Passive Observation")
-            st.caption("No trades are blocked by regime yet. This data will tell us whether to add a gate after 30 days.")
+            st.markdown("No trades are blocked by regime yet. This data will tell us whether to add a gate after 30 days.")
             regime_cols = ["date", "regime_label", "vix_level", "fear_greed",
                            "spy_change_pct", "gross_pnl", "win_rate", "trades_taken"]
             available = [c for c in regime_cols if c in df_perf_total.columns]
