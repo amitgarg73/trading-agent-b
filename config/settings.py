@@ -44,7 +44,7 @@ RSI_OVERBOUGHT       = 65
 MIN_VOLUME_RATIO     = 0.3         # vs 20-day avg
 MIN_PRICE            = 15.0        # blue chips only — higher floor
 MIN_AVG_VOLUME       = 5_000_000   # 5M+ avg volume (blue chip floor)
-SCORE_THRESHOLD      = 3
+SCORE_THRESHOLD      = 1
 
 # Intraday scan windows
 INTRADAY_SCAN_UTC_START         = 15
