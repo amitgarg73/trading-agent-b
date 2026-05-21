@@ -32,6 +32,16 @@ TRAIL_PCT            = 0.01
 PARTIAL_PROFIT_ENABLED = True
 PARTIAL_PROFIT_PCT   = 0.01
 
+# R-multiple stop ladder — ratchets stop up at profit milestones
+# R = entry - stop_loss (initial risk per share)
+# At +1R: move stop to entry (breakeven) — capital protected
+# At +2R: move stop to entry + R — lock in half the original target
+R_LADDER_ENABLED     = True
+
+# VWAP exit — close if price drops below VWAP while capital is still at risk
+# Only fires when stop < entry (R-ladder hasn't yet protected capital)
+VWAP_EXIT_ENABLED    = True
+
 POSITION_SIZE_BY_CONFIDENCE = {
     "HIGH":   3_500,
     "MEDIUM": 3_000,

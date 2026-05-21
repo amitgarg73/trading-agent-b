@@ -89,11 +89,12 @@ def test_pnl_uses_fill_price_not_entry(mock_get, mock_update):
 
 # ── Low watermark tracking in intraday loop ───────────────────────────────────
 
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
 @patch("agents.alpaca_broker._get")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.get_current_price")
-def test_low_watermark_updates_when_price_drops(mock_price, mock_update, mock_select, mock_get):
+def test_low_watermark_updates_when_price_drops(mock_price, mock_update, mock_select, mock_get, mock_signals):
     # AAPL exists in Alpaca → reconciliation skips it
     mock_get.return_value = _alpaca_mock_with_open("AAPL")
     pos = _pos(fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
@@ -107,21 +108,22 @@ def test_low_watermark_updates_when_price_drops(mock_price, mock_update, mock_se
     assert first_update_kwargs["low_watermark"] == 97.5
 
 
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
 @patch("agents.alpaca_broker._get")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.get_current_price")
-def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_select, mock_get):
+def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_select, mock_get, mock_signals):
     # AAPL exists in Alpaca → reconciliation skips it
     mock_get.return_value = _alpaca_mock_with_open("AAPL")
     pos = _pos(fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
     mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
-    mock_price.return_value = 105.0
+    mock_price.return_value = 103.0   # below +1R (105) so R-ladder stays quiet
 
     update_positions_intraday()
 
     update_kwargs = mock_update.call_args[0][2]
-    assert update_kwargs["high_watermark"] == 105.0
+    assert update_kwargs["high_watermark"] == 103.0
 
 
 # ── Reconciliation: UNFILLED detection ───────────────────────────────────────
@@ -201,11 +203,12 @@ def test_reconcile_no_buy_marked_unfilled(mock_get, mock_select, mock_update):
     assert kwargs["realized_pnl"] == 0
 
 
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
 @patch("agents.alpaca_broker._get")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.get_current_price")
-def test_low_watermark_never_rises(mock_price, mock_update, mock_select, mock_get):
+def test_low_watermark_never_rises(mock_price, mock_update, mock_select, mock_get, mock_signals):
     """Low watermark should not increase even if price later recovers."""
     # AAPL exists in Alpaca → reconciliation skips it
     mock_get.return_value = _alpaca_mock_with_open("AAPL")
@@ -217,3 +220,105 @@ def test_low_watermark_never_rises(mock_price, mock_update, mock_select, mock_ge
 
     update_kwargs = mock_update.call_args[0][2]
     assert update_kwargs["low_watermark"] == 96.0   # stays at the prior low
+
+
+# ── R-multiple stop ladder tests ──────────────────────────────────────────────
+
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_r_ladder_moves_stop_to_breakeven_at_1R(mock_price, mock_update, mock_select, mock_get, mock_signals):
+    """At +1R profit (price = entry + R), stop should ratchet to entry (breakeven)."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    # entry=100, stop=95 → R=5; +1R threshold = entry+R = 105
+    pos = _pos(entry=100.0, fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
+    pos["target_price"] = 120.0   # keep target out of range
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 105.0
+
+    update_positions_intraday()
+
+    first_kwargs = mock_update.call_args_list[0][0][2]
+    assert first_kwargs.get("stop_loss") == 100.0   # breakeven
+
+
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_r_ladder_moves_stop_to_entry_plus_r_at_2R(mock_price, mock_update, mock_select, mock_get, mock_signals):
+    """At +2R profit (price = entry + 2R), stop should ratchet to entry + R."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    pos = _pos(entry=100.0, fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
+    pos["target_price"] = 120.0
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 110.0   # +2R (entry + 2*5 = 110)
+
+    update_positions_intraday()
+
+    first_kwargs = mock_update.call_args_list[0][0][2]
+    assert first_kwargs.get("stop_loss") == 105.0   # entry + R
+
+
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_r_ladder_no_change_below_1R(mock_price, mock_update, mock_select, mock_get, mock_signals):
+    """Below +1R, stop must not be adjusted."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    pos = _pos(entry=100.0, fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 103.0   # below +1R threshold of 105
+
+    update_positions_intraday()
+
+    for c in mock_update.call_args_list:
+        assert "stop_loss" not in c[0][2]
+
+
+# ── VWAP exit tests ────────────────────────────────────────────────────────────
+
+@patch("agents.alpaca_broker._close_position")
+@patch("agents.alpaca_broker.get_intraday_signals")
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_vwap_exit_when_capital_at_risk(mock_price, mock_update, mock_select, mock_get, mock_signals, mock_close):
+    """Price below VWAP with stop < entry should trigger VWAP_BREAK close."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    pos = _pos(entry=100.0, fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
+    pos["stop_loss"] = 95.0   # stop < entry → capital at risk
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 98.0
+    mock_signals.return_value = {"AAPL": {"vwap": 99.0}}   # price(98) < vwap(99)
+
+    update_positions_intraday()
+
+    mock_close.assert_called_once()
+    assert mock_close.call_args[0][2] == "VWAP_BREAK"
+
+
+@patch("agents.alpaca_broker._close_position")
+@patch("agents.alpaca_broker.get_intraday_signals")
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_vwap_exit_skipped_when_r_ladder_protected(mock_price, mock_update, mock_select, mock_get, mock_signals, mock_close):
+    """VWAP exit must not fire when stop >= entry (R-ladder has protected capital)."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    pos = _pos(entry=100.0, fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
+    pos["stop_loss"] = 100.0   # stop == entry → R-ladder already moved stop to breakeven
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 101.0   # above stop, below target — no exit triggers
+    mock_signals.return_value = {"AAPL": {"vwap": 102.0}}   # price(101) < vwap(102), but should be ignored
+
+    update_positions_intraday()
+
+    mock_close.assert_not_called()

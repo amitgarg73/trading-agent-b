@@ -15,6 +15,7 @@ from config.settings import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, STRATEGY_TAG,
     TRAIL_PCT, PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PCT,
     DAILY_LOCK_IN_TARGET, DAILY_BONUS_TARGET, LOCK_IN_TRAIL_PCT,
+    R_LADDER_ENABLED, VWAP_EXIT_ENABLED,
 )
 
 _client: TradingClient | None = None
@@ -292,6 +293,10 @@ def update_positions_intraday() -> dict:
         if str(r.get("closed_at", ""))[:10] == str(date.today())
     )
 
+    # Batch-fetch VWAP signals once for all open tickers
+    tickers = [p["ticker"] for p in positions if p.get("ticker")]
+    intraday_signals = get_intraday_signals(tickers) if VWAP_EXIT_ENABLED and tickers else {}
+
     closed = []
     for pos in positions:
         ticker = pos["ticker"]
@@ -310,7 +315,26 @@ def update_positions_intraday() -> dict:
         new_watermark = max(watermark, price)
         new_low_wm    = min(low_watermark, price)
 
-        # Update watermarks
+        # ── R-multiple stop ladder ────────────────────────────────────────────
+        # R = initial risk per share (entry − original stop).
+        # +1R profit → move stop to entry (breakeven, capital protected).
+        # +2R profit → move stop to entry + R (lock in half the move).
+        # Stop only ever ratchets up — never back down.
+        if R_LADDER_ENABLED:
+            R = entry - float(pos.get("stop_loss") or stop)
+            if R > 0:
+                if price >= entry + 2 * R and stop < round(entry + R, 2):
+                    new_stop = round(entry + R, 2)
+                    db.update("b_positions", {"id": pos["id"]}, {"stop_loss": new_stop})
+                    stop = new_stop
+                    print(f"  📈 R-ladder +2R: {ticker} stop → ${new_stop:.2f} (entry+R)")
+                elif price >= entry + R and stop < entry:
+                    new_stop = round(entry, 2)
+                    db.update("b_positions", {"id": pos["id"]}, {"stop_loss": new_stop})
+                    stop = new_stop
+                    print(f"  📈 R-ladder +1R: {ticker} stop → breakeven ${new_stop:.2f}")
+
+        # Update watermarks and current price
         db.update("b_positions", {"id": pos["id"]}, {
             "current_price":  price,
             "unrealized_pnl": unrealized,
@@ -320,7 +344,7 @@ def update_positions_intraday() -> dict:
 
         close_reason = None
 
-        # Bonus target — close everything
+        # Bonus target — close everything to protect exceptional day
         if (today_realized + unrealized) >= DAILY_BONUS_TARGET:
             close_reason = "BONUS_TARGET"
 
@@ -328,12 +352,21 @@ def update_positions_intraday() -> dict:
         elif price >= target:
             close_reason = "TARGET"
 
-        # Trailing stop
-        elif price <= new_watermark * (1 - TRAIL_PCT):
+        # VWAP break — exit if price drops below VWAP while capital is at risk.
+        # Skip when stop >= entry (R-ladder already protects capital — let it ride).
+        elif VWAP_EXIT_ENABLED and stop < entry:
+            sig  = intraday_signals.get(ticker, {})
+            vwap = sig.get("vwap")
+            if vwap and price < vwap:
+                close_reason = "VWAP_BREAK"
+                print(f"  📉 VWAP break: {ticker} ${price:.2f} < VWAP ${vwap:.2f} — exiting")
+
+        # Trailing stop — ratchets from high watermark
+        if not close_reason and price <= new_watermark * (1 - TRAIL_PCT):
             close_reason = "MANUAL_TRAIL"
 
         # Hard stop
-        elif price <= stop:
+        if not close_reason and price <= stop:
             close_reason = "STOP"
 
         if close_reason:
