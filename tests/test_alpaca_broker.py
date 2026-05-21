@@ -24,12 +24,33 @@ def _pos(entry=100.0, fill=100.0, shares=10, high_wm=None, low_wm=None, cur=100.
     }
 
 
+def _filled_order(close_price: float) -> MagicMock:
+    """Return a mock Alpaca order that looks like a confirmed fill."""
+    o = MagicMock()
+    o.status = "filled"
+    o.filled_avg_price = close_price
+    return o
+
+
+def _alpaca_mock_with_open(ticker: str = "AAPL") -> MagicMock:
+    """
+    Return a mock _get() return value where `ticker` exists as an open Alpaca position.
+    This makes _reconcile_with_alpaca() skip the position (no ghost-position action).
+    """
+    pos_mock = MagicMock()
+    pos_mock.symbol = ticker
+    client = MagicMock()
+    client.get_all_positions.return_value = [pos_mock]
+    return client
+
+
 # ── MAE / MFE tests ──────────────────────────────────────────────────────────
 
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker._get")
 def test_close_position_writes_mfe(mock_get, mock_update):
     mock_get.return_value.submit_order.return_value = MagicMock()
+    mock_get.return_value.get_order_by_id.return_value = _filled_order(107.0)
     pos = _pos(fill=100.0, shares=10, high_wm=108.0, low_wm=100.0)
     _close_position(pos, price=107.0, reason="TARGET")
 
@@ -42,6 +63,7 @@ def test_close_position_writes_mfe(mock_get, mock_update):
 @patch("agents.alpaca_broker._get")
 def test_close_position_writes_mae(mock_get, mock_update):
     mock_get.return_value.submit_order.return_value = MagicMock()
+    mock_get.return_value.get_order_by_id.return_value = _filled_order(97.0)
     pos = _pos(fill=100.0, shares=10, high_wm=100.0, low_wm=96.0)
     _close_position(pos, price=97.0, reason="STOP")
 
@@ -55,6 +77,7 @@ def test_close_position_writes_mae(mock_get, mock_update):
 def test_pnl_uses_fill_price_not_entry(mock_get, mock_update):
     """P&L should be computed from actual fill, not planned entry price."""
     mock_get.return_value.submit_order.return_value = MagicMock()
+    mock_get.return_value.get_order_by_id.return_value = _filled_order(110.0)
     # Planned entry 100, actual fill 100.5 (5 bps slip), close at 110
     pos = _pos(entry=100.0, fill=100.5, shares=10, high_wm=110.0, low_wm=100.5)
     _close_position(pos, price=110.0, reason="TARGET")
@@ -71,7 +94,8 @@ def test_pnl_uses_fill_price_not_entry(mock_get, mock_update):
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.get_current_price")
 def test_low_watermark_updates_when_price_drops(mock_price, mock_update, mock_select, mock_get):
-    mock_get.return_value.submit_order.return_value = MagicMock()
+    # AAPL exists in Alpaca → reconciliation skips it
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
     pos = _pos(fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
     mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
     mock_price.return_value = 97.5   # price drops — trailing stop may fire
@@ -83,10 +107,13 @@ def test_low_watermark_updates_when_price_drops(mock_price, mock_update, mock_se
     assert first_update_kwargs["low_watermark"] == 97.5
 
 
+@patch("agents.alpaca_broker._get")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.get_current_price")
-def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_select):
+def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_select, mock_get):
+    # AAPL exists in Alpaca → reconciliation skips it
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
     pos = _pos(fill=100.0, shares=10, high_wm=100.0, low_wm=100.0)
     mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
     mock_price.return_value = 105.0
@@ -97,11 +124,14 @@ def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_s
     assert update_kwargs["high_watermark"] == 105.0
 
 
+@patch("agents.alpaca_broker._get")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.get_current_price")
-def test_low_watermark_never_rises(mock_price, mock_update, mock_select):
+def test_low_watermark_never_rises(mock_price, mock_update, mock_select, mock_get):
     """Low watermark should not increase even if price later recovers."""
+    # AAPL exists in Alpaca → reconciliation skips it
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
     pos = _pos(fill=100.0, shares=10, high_wm=100.0, low_wm=96.0)
     mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
     mock_price.return_value = 102.0   # recovered above prior low

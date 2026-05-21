@@ -8,8 +8,8 @@ import os
 import time
 from datetime import date, datetime
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus
+from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrderStatus
 from core import db
 from config.settings import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, STRATEGY_TAG,
@@ -125,12 +125,95 @@ def open_positions() -> list[dict]:
     return db.select("b_positions", filters={"status": "OPEN"})
 
 
+def get_open_tickers() -> set:
+    """Return set of ticker symbols currently held in Alpaca."""
+    positions = _get().get_all_positions()
+    return {p.symbol for p in positions}
+
+
+def _reconcile_with_alpaca() -> None:
+    """
+    Close any b_positions OPEN rows that no longer exist in Alpaca.
+    Two cases:
+      - Entry filled + bracket exited (stop/target fired natively) → CLOSED with real P&L
+      - Entry never filled and no pending buy → UNFILLED at $0
+    """
+    alpaca_tickers = get_open_tickers()
+    positions = open_positions()
+    if not positions:
+        return
+
+    try:
+        all_orders = _get().get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100)
+        )
+        today = datetime.utcnow().date().isoformat()
+        filled_sells = {
+            str(o.symbol): o
+            for o in all_orders
+            if str(o.side) == "sell"
+            and str(o.status) == "filled"
+            and (o.filled_at or o.submitted_at or "").startswith(today[:10])
+        }
+        pending_buys = {
+            str(o.symbol)
+            for o in all_orders
+            if str(o.side) == "buy"
+            and str(o.status) in ("pending_new", "accepted", "new", "held", "partially_filled")
+            and (o.submitted_at or "").startswith(today[:10])
+        }
+    except Exception:
+        filled_sells = {}
+        pending_buys = set()
+
+    for pos in positions:
+        if pos["ticker"] in alpaca_tickers:
+            continue
+        if pos["ticker"] in pending_buys:
+            print(f"  ⏳ Reconciliation: {pos['ticker']} buy order pending — waiting for fill")
+            continue
+        sell_order = filled_sells.get(pos["ticker"])
+        if sell_order and sell_order.filled_avg_price:
+            close_price = float(sell_order.filled_avg_price)
+            type_str    = str(sell_order.order_type).lower()
+            mechanism   = "TARGET" if "limit" in type_str else ("NATIVE_TRAIL" if "trailing" in type_str else "STOP")
+            entry       = float(pos.get("fill_price") or pos.get("entry_price") or 0)
+            shares      = int(pos.get("shares") or 0)
+            realized    = round((close_price - entry) * shares, 2)
+            high_wm     = float(pos.get("high_watermark") or entry)
+            low_wm      = float(pos.get("low_watermark")  or entry)
+            mae         = round(max(0.0, (entry - low_wm)  * shares), 2)
+            mfe         = round(max(0.0, (high_wm - entry) * shares), 2)
+            print(f"  📋 Reconciliation: {pos['ticker']} closed via {mechanism} @ ${close_price:.2f} | P&L: ${realized:+.2f}")
+            db.update("b_positions", {"id": pos["id"]}, {
+                "status":         "CLOSED",
+                "close_reason":   mechanism,
+                "exit_mechanism": mechanism,
+                "closed_at":      datetime.utcnow().isoformat(),
+                "realized_pnl":   realized,
+                "close_price":    close_price,
+                "mae":            mae,
+                "mfe":            mfe,
+            })
+        else:
+            print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")
+            db.update("b_positions", {"id": pos["id"]}, {
+                "status":         "CLOSED",
+                "close_reason":   "UNFILLED",
+                "exit_mechanism": "UNFILLED",
+                "closed_at":      datetime.utcnow().isoformat(),
+                "realized_pnl":   0,
+                "close_price":    pos.get("entry_price"),
+            })
+
+
 def update_positions_intraday() -> dict:
     """
-    Check all open positions against current prices.
-    Apply trailing stop, partial profit, lock-in logic.
+    Reconcile with Alpaca first (catches native bracket exits), then check
+    remaining open positions for manual trail/stop/target/bonus logic.
     Returns summary of actions taken.
     """
+    _reconcile_with_alpaca()
     positions = open_positions()
     if not positions:
         return {"checked": 0, "closed": []}
