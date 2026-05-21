@@ -385,6 +385,23 @@ def close_all_positions(reason: str = "EOD") -> list[dict]:
         price = get_current_price(pos["ticker"]) or float(pos.get("current_price") or pos["entry_price"])
         _close_position(pos, price, reason)
         closed.append(pos["ticker"])
+
+    # Safety sweep: close any Alpaca positions orphaned (filled but never tracked in DB)
+    db_tickers = {p["ticker"] for p in positions}
+    try:
+        broker = _get()
+        broker.cancel_orders_for_symbol  # check connection
+        for ap in broker.get_all_positions():
+            if ap.symbol not in db_tickers:
+                print(f"[alpaca] Orphan sweep closing {ap.symbol} ({ap.qty} shares)")
+                try:
+                    broker.close_position(ap.symbol)
+                    closed.append(ap.symbol)
+                except Exception as e:
+                    print(f"[alpaca] Could not close orphan {ap.symbol}: {e}")
+    except Exception as e:
+        print(f"[alpaca] Orphan sweep error: {e}")
+
     print(f"[alpaca] EOD closed: {closed}")
     return closed
 
