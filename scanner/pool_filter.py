@@ -212,9 +212,8 @@ def _filter_score(m: dict) -> float:
     """
     score = 0.0
 
-    # Volume — base filter, more = better
-    if m["vol_ratio"] >= POOL3_MIN_VOL_RATIO:
-        score += m["vol_ratio"]
+    # Volume — more = better (no hard gate; early-day low vol still scores 0)
+    score += m.get("vol_ratio", 0)
 
     # VWAP signals — reclaim is stronger than just above
     if m.get("vwap_reclaim"):
@@ -269,7 +268,7 @@ def get_pool3_tickers() -> list[str]:
     metrics = []
     for ticker in pool2:
         m = _realtime_metrics(ticker)
-        if m and m["vol_ratio"] >= POOL3_MIN_VOL_RATIO:
+        if m:
             m["filter_score"] = _filter_score(m)
             metrics.append(m)
 
@@ -290,7 +289,7 @@ def get_pool3_with_context() -> list[dict]:
     metrics = []
     for ticker in pool2:
         m = _realtime_metrics(ticker)
-        if m and m["vol_ratio"] >= POOL3_MIN_VOL_RATIO:
+        if m:
             m["filter_score"] = _filter_score(m)
             metrics.append(m)
 
