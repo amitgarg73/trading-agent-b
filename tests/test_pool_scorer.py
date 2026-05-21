@@ -73,6 +73,41 @@ def test_slippage_computed_from_fill_price():
         assert slip > 0, f"Expected non-zero slippage, got {slip}"
 
 
+def test_unfilled_analysis_prints_outcome():
+    """_print_unfilled_analysis should report whether target would have been hit."""
+    from agents.pool_scorer import _print_unfilled_analysis
+    import pandas as pd
+    from datetime import date
+
+    today = str(date.today())
+    unfilled = [{
+        "ticker": "AAPL", "close_reason": "UNFILLED",
+        "entry_price": 180.0, "target_price": 182.0, "stop_loss": 178.8,
+        "opened_at": f"{today}T10:00:00",
+    }]
+
+    fake_hist = pd.DataFrame([
+        {"High": 183.0, "Low": 179.0, "Close": 182.5, "Open": 180.0, "Volume": 1_000_000}
+    ])
+
+    with patch("agents.pool_scorer.yf.Ticker") as mock_yf:
+        mock_yf.return_value.history.return_value = fake_hist
+        # Should not raise; target 182.0 ≤ high 183.0 → would hit
+        _print_unfilled_analysis(unfilled)
+        mock_yf.assert_called_once_with("AAPL")
+
+
+def test_unfilled_analysis_skips_non_unfilled():
+    """_print_unfilled_analysis must be a no-op when no UNFILLED positions."""
+    from agents.pool_scorer import _print_unfilled_analysis
+
+    closed = [{"ticker": "AAPL", "close_reason": "TARGET",
+               "entry_price": 180.0, "target_price": 182.0}]
+    with patch("agents.pool_scorer.yf.Ticker") as mock_yf:
+        _print_unfilled_analysis(closed)
+        mock_yf.assert_not_called()
+
+
 @patch("agents.pool_scorer.db.select")
 def test_rolling_score_empty_history_returns_today(mock_select):
     mock_select.return_value = []

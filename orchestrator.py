@@ -156,7 +156,16 @@ def _maybe_run_intraday_scan(broker: str) -> None:
     try:
         from scanner.intraday_momentum import scan as momentum_scan
 
-        candidates = momentum_scan(pool3_tickers, broker=broker)
+        # Tickers already traded today — don't re-enter (open or closed)
+        today_closed  = db.select("b_positions", filters={"status": "CLOSED"})
+        traded_today  = (
+            {p["ticker"] for p in open_pos if p.get("ticker")}
+            | {p["ticker"] for p in today_closed
+               if p.get("ticker") and str(p.get("opened_at", ""))[:10] == today}
+        )
+
+        candidates = [c for c in momentum_scan(pool3_tickers, broker=broker)
+                      if c["ticker"] not in traded_today]
         print(f"        Momentum movers: {len(candidates)} Pool 3 stocks "
               f"up ≥{MIN_INTRADAY_MOVE_PCT:.0f}% above VWAP")
 
