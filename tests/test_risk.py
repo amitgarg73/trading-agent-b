@@ -29,7 +29,7 @@ def test_valid_trade_approved(mock_pnl, mock_select):
 
 
 @patch("agents.risk.db.select", return_value=[])
-@patch("agents.risk._today_realized_pnl", return_value=-400.0)
+@patch("agents.risk._today_realized_pnl", return_value=-600.0)
 def test_daily_loss_limit_blocks_all(mock_pnl, mock_select):
     approved, rejected = validate([_trade()])
     assert len(approved) == 0

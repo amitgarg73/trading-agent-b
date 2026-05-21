@@ -134,8 +134,10 @@ def _maybe_run_intraday_scan(broker: str) -> None:
     unrealized     = sum(p.get("unrealized_pnl") or 0 for p in open_pos)
     total          = today_realized + unrealized
 
-    if today_realized <= DAILY_LOSS_LIMIT:
-        print(f"  ⛔ Intraday scan skipped: realized ${today_realized:,.2f} ≤ loss limit")
+    if total <= DAILY_LOSS_LIMIT:
+        from config.settings import TOTAL_CAPITAL as _CAP
+        print(f"  ⛔ Intraday scan skipped: net P&L ${total:,.2f} ≤ loss limit ${DAILY_LOSS_LIMIT:,.0f} "
+              f"(1% of ${_CAP:,}). Resumes when net P&L recovers.")
         return
     if total >= DAILY_BONUS_TARGET:
         print(f"  🏆 Intraday scan skipped: bonus target reached (${total:,.2f})")
@@ -207,6 +209,7 @@ def _maybe_run_intraday_scan(broker: str) -> None:
             return
 
         # Save to today's existing plan
+        today_plan = db.select("b_trade_plans", filters={"date": today})
         plan_id = today_plan[0]["id"] if today_plan else None
         if plan_id:
             for t in final:
@@ -226,14 +229,21 @@ def _maybe_run_intraday_scan(broker: str) -> None:
                     "status":           "PLANNED",
                 })
 
+        run_row = db.insert("b_daily_runs", {
+            "date":       today,
+            "run_type":   "intraday",
+            "run_number": run_num,
+            "started_at": now_utc.isoformat(),
+        })
         if broker == "alpaca":
-            placed = place_orders(final)
+            placed = place_orders(final, run_id=run_row["id"])
             print(f"  ✅ Intraday scan #{run_num}: placed {len(placed)} order(s): "
                   f"{[p['ticker'] for p in placed]}")
         else:
             placed = final
             print(f"  ✅ Intraday scan #{run_num} (simulation): "
                   f"would trade {[t['ticker'] for t in final]}")
+        db.update("b_daily_runs", {"id": run_row["id"]}, {"positions_opened": len(placed)})
 
         _save_intraday_scan(today, now_utc, {
             "candidates": len(candidates),
@@ -369,12 +379,22 @@ def premarket(broker: str = "alpaca") -> None:
             })
 
     # 8. Place orders
+    run_row = db.insert("b_daily_runs", {
+        "date":       str(date.today()),
+        "run_type":   "premarket",
+        "run_number": 0,
+        "started_at": datetime.utcnow().isoformat(),
+    })
     if final and broker == "alpaca":
         print(f"\n[7] Placing {len(final)} orders via Alpaca...")
-        placed = place_orders(final)
+        placed = place_orders(final, run_id=run_row["id"])
         print(f"    Placed: {[p['ticker'] for p in placed]}")
     elif final:
+        placed = final
         print(f"\n[7] Simulation mode — would trade: {[t['ticker'] for t in final]}")
+    else:
+        placed = []
+    db.update("b_daily_runs", {"id": run_row["id"]}, {"positions_opened": len(placed)})
 
     print(f"\n✅ Premarket complete — {len(final)} trades | "
           f"Est. profit: ${sum(t.get('estimated_profit', 0) for t in final):.0f}")

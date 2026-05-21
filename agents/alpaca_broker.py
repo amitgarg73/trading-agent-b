@@ -128,7 +128,7 @@ def get_current_price(ticker: str) -> float | None:
         return None
 
 
-def place_orders(trades: list[dict]) -> list[dict]:
+def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
     """Place market buy orders for approved trades. Returns list with order_ids."""
     broker  = _get()
     placed  = []
@@ -193,6 +193,7 @@ def place_orders(trades: list[dict]) -> list[dict]:
                 "alpaca_order_id": str(order.id),
                 "high_watermark":  fill_price,
                 "low_watermark":   fill_price,
+                "run_id":          run_id,
             })
 
             placed.append({**trade, "alpaca_order_id": str(order.id)})
