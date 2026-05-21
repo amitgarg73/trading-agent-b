@@ -225,15 +225,20 @@ def _reconcile_with_alpaca() -> None:
     if not positions:
         return
 
+    # get_orders() returns parent orders only — bracket child legs (stop/target) are not
+    # included, so filled_sells would always be empty for bracket exits. Instead track
+    # filled_buys: if entry filled, the bracket exited; update_positions_intraday()'s
+    # manual trail/stop/target logic resolves P&L. Only mark UNFILLED when no buy
+    # order ever filled or is pending — entry truly never executed.
     try:
         all_orders = _get().get_orders(
             GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100)
         )
         today = datetime.utcnow().date().isoformat()
-        filled_sells = {
-            str(o.symbol): o
+        filled_buys = {
+            str(o.symbol)
             for o in all_orders
-            if str(o.side) == "sell"
+            if str(o.side) == "buy"
             and str(o.status) == "filled"
             and (o.filled_at or o.submitted_at or "").startswith(today[:10])
         }
@@ -244,8 +249,9 @@ def _reconcile_with_alpaca() -> None:
             and str(o.status) in ("pending_new", "accepted", "new", "held", "partially_filled")
             and (o.submitted_at or "").startswith(today[:10])
         }
-    except Exception:
-        filled_sells = {}
+    except Exception as e:
+        print(f"  ⚠️  Reconciliation: order fetch failed — {e}")
+        filled_buys  = set()
         pending_buys = set()
 
     for pos in positions:
@@ -254,39 +260,19 @@ def _reconcile_with_alpaca() -> None:
         if pos["ticker"] in pending_buys:
             print(f"  ⏳ Reconciliation: {pos['ticker']} buy order pending — waiting for fill")
             continue
-        sell_order = filled_sells.get(pos["ticker"])
-        if sell_order and sell_order.filled_avg_price:
-            close_price = float(sell_order.filled_avg_price)
-            type_str    = str(sell_order.order_type).lower()
-            mechanism   = "NATIVE_TRAIL" if "trailing" in type_str else ("STOP" if "stop" in type_str else "TARGET")
-            entry       = float(pos.get("fill_price") or pos.get("entry_price") or 0)
-            shares      = int(pos.get("shares") or 0)
-            realized    = round((close_price - entry) * shares, 2)
-            high_wm     = float(pos.get("high_watermark") or entry)
-            low_wm      = float(pos.get("low_watermark")  or entry)
-            mae         = round(max(0.0, (entry - low_wm)  * shares), 2)
-            mfe         = round(max(0.0, (high_wm - entry) * shares), 2)
-            print(f"  📋 Reconciliation: {pos['ticker']} closed via {mechanism} @ ${close_price:.2f} | P&L: ${realized:+.2f}")
-            db.update("b_positions", {"id": pos["id"]}, {
-                "status":         "CLOSED",
-                "close_reason":   mechanism,
-                "exit_mechanism": mechanism,
-                "closed_at":      datetime.utcnow().isoformat(),
-                "realized_pnl":   realized,
-                "close_price":    close_price,
-                "mae":            mae,
-                "mfe":            mfe,
-            })
-        else:
-            print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")
-            db.update("b_positions", {"id": pos["id"]}, {
-                "status":         "CLOSED",
-                "close_reason":   "UNFILLED",
-                "exit_mechanism": "UNFILLED",
-                "closed_at":      datetime.utcnow().isoformat(),
-                "realized_pnl":   0,
-                "close_price":    pos.get("entry_price"),
-            })
+        if pos["ticker"] in filled_buys:
+            # Entry filled — bracket exited; update_positions_intraday() resolves P&L
+            continue
+        # No filled buy and no pending buy — entry truly never executed
+        print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")
+        db.update("b_positions", {"id": pos["id"]}, {
+            "status":         "CLOSED",
+            "close_reason":   "UNFILLED",
+            "exit_mechanism": "UNFILLED",
+            "closed_at":      datetime.utcnow().isoformat(),
+            "realized_pnl":   0,
+            "close_price":    pos.get("entry_price"),
+        })
 
 
 def update_positions_intraday() -> dict:

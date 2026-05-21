@@ -124,71 +124,81 @@ def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_s
     assert update_kwargs["high_watermark"] == 105.0
 
 
-# ── Reconciliation: stop_limit mechanism classification ──────────────────────
+# ── Reconciliation: UNFILLED detection ───────────────────────────────────────
 
-@patch("agents.alpaca_broker.db.update")
-@patch("agents.alpaca_broker.db.select")
-@patch("agents.alpaca_broker._get")
-def test_reconcile_stop_limit_classified_as_stop(mock_get, mock_select, mock_update):
-    """stop_limit order_type must be classified as STOP, not TARGET."""
-    from agents.alpaca_broker import _reconcile_with_alpaca
-    from alpaca.trading.requests import GetOrdersRequest
-
-    sell_order = MagicMock()
-    sell_order.symbol = "AAPL"
-    sell_order.side = "sell"
-    sell_order.status = "filled"
-    sell_order.filled_avg_price = 95.0
-    sell_order.order_type = "stop_limit"
-    sell_order.filled_at = "2026-05-21T15:30:00"
-    sell_order.submitted_at = "2026-05-21T15:30:00"
-
-    pos = _pos(fill=100.0, shares=10)
-    pos["ticker"] = "AAPL"
-    pos["status"] = "OPEN"
-
-    mock_get.return_value.get_all_positions.return_value = []   # not open in Alpaca
-    mock_get.return_value.get_orders.return_value = [sell_order]
-    mock_select.return_value = [pos]
-
-    _reconcile_with_alpaca()
-
-    update_kwargs = mock_update.call_args[0][2]
-    assert update_kwargs["close_reason"] == "STOP"
-    assert update_kwargs["exit_mechanism"] == "STOP"
-    assert update_kwargs["realized_pnl"] == round((95.0 - 100.0) * 10, 2)   # -$50
+def _buy_order(symbol, status, submitted_at="2026-05-21T15:00:00"):
+    o = MagicMock()
+    o.symbol = symbol
+    o.side = "buy"
+    o.status = status
+    o.filled_at = submitted_at
+    o.submitted_at = submitted_at
+    return o
 
 
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker._get")
-def test_reconcile_limit_classified_as_target(mock_get, mock_select, mock_update):
-    """Pure limit sell = take-profit hit → TARGET."""
+def test_reconcile_filled_buy_not_marked_unfilled(mock_get, mock_select, mock_update):
+    """Entry filled (buy=filled) but gone from Alpaca → NOT UNFILLED.
+    update_positions_intraday() resolves the exit via manual trail/stop logic."""
     from agents.alpaca_broker import _reconcile_with_alpaca
-
-    sell_order = MagicMock()
-    sell_order.symbol = "AAPL"
-    sell_order.side = "sell"
-    sell_order.status = "filled"
-    sell_order.filled_avg_price = 110.0
-    sell_order.order_type = "limit"
-    sell_order.filled_at = "2026-05-21T15:30:00"
-    sell_order.submitted_at = "2026-05-21T15:30:00"
 
     pos = _pos(fill=100.0, shares=10)
     pos["ticker"] = "AAPL"
     pos["status"] = "OPEN"
 
     mock_get.return_value.get_all_positions.return_value = []
-    mock_get.return_value.get_orders.return_value = [sell_order]
+    mock_get.return_value.get_orders.return_value = [_buy_order("AAPL", status="filled")]
     mock_select.return_value = [pos]
 
     _reconcile_with_alpaca()
 
-    update_kwargs = mock_update.call_args[0][2]
-    assert update_kwargs["close_reason"] == "TARGET"
-    assert update_kwargs["exit_mechanism"] == "TARGET"
-    assert update_kwargs["realized_pnl"] == round((110.0 - 100.0) * 10, 2)   # +$100
+    mock_update.assert_not_called()
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_pending_buy_not_marked_unfilled(mock_get, mock_select, mock_update):
+    """Buy order in flight → leave OPEN, don't mark UNFILLED."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "TSLA"
+    pos["status"] = "OPEN"
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = [_buy_order("TSLA", status="accepted")]
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    mock_update.assert_not_called()
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_no_buy_marked_unfilled(mock_get, mock_select, mock_update):
+    """No buy order at all → entry never executed → UNFILLED."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "NVDA"
+    pos["status"] = "OPEN"
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = []
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    mock_update.assert_called_once()
+    kwargs = mock_update.call_args[0][2]
+    assert kwargs["close_reason"] == "UNFILLED"
+    assert kwargs["exit_mechanism"] == "UNFILLED"
+    assert kwargs["realized_pnl"] == 0
 
 
 @patch("agents.alpaca_broker._get")
