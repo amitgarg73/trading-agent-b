@@ -48,7 +48,8 @@
 │  b_stock_scores     — daily scores per stock                │
 │  b_trade_plans      — daily trade plans                     │
 │  b_planned_trades   — individual planned trades             │
-│  b_positions        — open/closed positions                 │
+│  b_positions        — open/closed positions (run_id FK)     │
+│  b_daily_runs       — one row per scan (premarket+intraday) │
 │  b_daily_performance — daily P&L summary                   │
 └─────────────────────┬───────────────────────────────────────┘
                       │
