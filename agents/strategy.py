@@ -97,11 +97,13 @@ LOW:    total_score 3-4 with mixed signals
 """
 
 
-def select_trades(candidates: list[dict], market_context: dict, pool3_context: list[dict]) -> dict:
+def select_trades(candidates: list[dict], market_context: dict, pool3_context: list[dict],
+                  news_context: str = "") -> dict:
     """
-    candidates: scored results from scanner
+    candidates:     scored results from scanner
     market_context: futures, VIX, fear_greed, news
-    pool3_context: real-time pool_filter metrics (vol_ratio, above_vwap, rs_vs_sector)
+    pool3_context:  real-time pool_filter metrics (vol_ratio, above_vwap, rs_vs_sector)
+    news_context:   optional headlines string from news_intel; empty string if not provided
     """
     if not candidates:
         return {"trades": [], "summary": "No candidates passed scanner.", "pass": False}
@@ -114,11 +116,15 @@ def select_trades(candidates: list[dict], market_context: dict, pool3_context: l
         m = pool3_map.get(t, {})
         enriched.append({**c, **{k: v for k, v in m.items() if k not in c}})
 
-    user_msg = json.dumps({
-        "date":            datetime.now().strftime("%Y-%m-%d"),
-        "market_context":  market_context,
-        "candidates":      enriched,
-    }, default=str)
+    payload: dict = {
+        "date":           datetime.now().strftime("%Y-%m-%d"),
+        "market_context": market_context,
+        "candidates":     enriched,
+    }
+    if news_context:
+        payload["news_context"] = news_context
+
+    user_msg = json.dumps(payload, default=str)
 
     resp = client.messages.create(
         model="claude-opus-4-7",

@@ -18,6 +18,7 @@ from config.settings import (
 )
 
 _client: TradingClient | None = None
+_data_client = None
 
 
 def _get() -> TradingClient:
@@ -27,10 +28,91 @@ def _get() -> TradingClient:
     return _client
 
 
+def _dclient():
+    global _data_client
+    if _data_client is None:
+        from alpaca.data import StockHistoricalDataClient
+        _data_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+    return _data_client
+
+
 def _order_id(ticker: str) -> str:
     """Unique client order ID with strategy tag for easy filtering."""
     ts = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     return f"strat{STRATEGY_TAG}_{ticker}_{ts}"
+
+
+def get_live_prices(tickers: list[str]) -> dict[str, float]:
+    """Fetch real-time ask prices via Alpaca quotes. Returns {ticker: price}."""
+    if not tickers:
+        return {}
+    try:
+        from alpaca.data.requests import StockLatestQuoteRequest
+        quotes = _dclient().get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=tickers)
+        )
+        prices = {}
+        for ticker, quote in quotes.items():
+            ask = getattr(quote, "ask_price", None)
+            bid = getattr(quote, "bid_price", None)
+            if ask and float(ask) > 0:
+                prices[ticker] = round(float(ask), 4)
+            elif bid and float(bid) > 0:
+                prices[ticker] = round(float(bid), 4)
+        return prices
+    except Exception as e:
+        print(f"        ⚠️  Live price fetch failed: {e}")
+        return {}
+
+
+def get_intraday_signals(tickers: list[str]) -> dict[str, dict]:
+    """
+    Fetch intraday signals via Alpaca snapshot API.
+    Returns {ticker: {above_vwap, vwap, today_pct_change, rs_vs_spy}}.
+    SPY is fetched as the RS baseline.
+    """
+    if not tickers:
+        return {}
+    all_tickers = list(set(tickers + ["SPY"]))
+    try:
+        from alpaca.data.requests import StockSnapshotRequest
+        snapshots = _dclient().get_stock_snapshot(
+            StockSnapshotRequest(symbol_or_symbols=all_tickers)
+        )
+
+        spy_snap = snapshots.get("SPY")
+        spy_pct  = None
+        if spy_snap and spy_snap.daily_bar:
+            spy_open  = getattr(spy_snap.daily_bar, "open", None)
+            spy_price = (getattr(spy_snap.latest_trade, "price", None)
+                         or getattr(spy_snap.daily_bar, "close", None))
+            if spy_open and spy_price and float(spy_open) > 0:
+                spy_pct = (float(spy_price) - float(spy_open)) / float(spy_open)
+
+        signals = {}
+        for ticker in tickers:
+            snap = snapshots.get(ticker)
+            if not snap or not snap.daily_bar:
+                continue
+            vwap    = getattr(snap.daily_bar, "vwap",  None)
+            open_px = getattr(snap.daily_bar, "open",  None)
+            price   = (getattr(snap.latest_trade, "price", None)
+                       or getattr(snap.daily_bar, "close", None))
+            if not (vwap and open_px and price):
+                continue
+            vwap, open_px, price = float(vwap), float(open_px), float(price)
+            today_pct = (price - open_px) / open_px if open_px > 0 else 0.0
+            rs_vs_spy = round(today_pct / spy_pct, 2) if spy_pct else None
+            signals[ticker] = {
+                "above_vwap":       price > vwap,
+                "vwap":             round(vwap, 2),
+                "today_pct_change": round(today_pct * 100, 2),
+                "rs_vs_spy":        rs_vs_spy,
+            }
+        return signals
+    except Exception as e:
+        print(f"        ⚠️  Intraday signals fetch failed: {e}")
+        return {}
 
 
 def get_current_price(ticker: str) -> float | None:

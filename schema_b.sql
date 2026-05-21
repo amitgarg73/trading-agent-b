@@ -129,6 +129,18 @@ alter table b_positions add column if not exists low_watermark numeric;
 alter table b_positions add column if not exists mae numeric;
 alter table b_positions add column if not exists mfe numeric;
 
+-- Intraday scan tracking (used by _maybe_run_intraday_scan in orchestrator)
+create table if not exists b_scan_results (
+    id          serial primary key,
+    date        text not null,
+    scanned_at  text not null,
+    scan_count  int  not null default 0,
+    candidates  int  not null default 0,
+    placed      int  not null default 0,
+    summary     text
+);
+create index if not exists idx_b_scan_results_date on b_scan_results(date);
+
 -- Indexes for common queries
 create index if not exists idx_b_positions_status  on b_positions(status);
 create index if not exists idx_b_positions_ticker  on b_positions(ticker);
