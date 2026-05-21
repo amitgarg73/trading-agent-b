@@ -58,7 +58,7 @@ MIN_INTRADAY_MOVE_PCT           = 2.0   # lower bar for blue chips — less vola
 POOL_PROMOTION_SCORE   = 6.0    # 7-day rolling score to promote Pool 1 → Pool 2
 POOL_DEMOTION_SCORE    = 2.0    # 7-day rolling score to demote Pool 2 → Pool 1
 POOL3_SIZE             = 10     # max stocks in Pool 3 each day
-POOL3_MIN_VOL_RATIO    = 1.5    # min relative volume for Pool 3 selection
+POOL3_MIN_VOL_RATIO    = 0.3    # min relative volume for Pool 3 selection
 POOL3_EARNINGS_DAYS    = 2      # exclude stocks with earnings within N days
 
 # Scoring weights for daily stock scoring
