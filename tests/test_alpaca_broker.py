@@ -124,6 +124,73 @@ def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_s
     assert update_kwargs["high_watermark"] == 105.0
 
 
+# ── Reconciliation: stop_limit mechanism classification ──────────────────────
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_stop_limit_classified_as_stop(mock_get, mock_select, mock_update):
+    """stop_limit order_type must be classified as STOP, not TARGET."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+    from alpaca.trading.requests import GetOrdersRequest
+
+    sell_order = MagicMock()
+    sell_order.symbol = "AAPL"
+    sell_order.side = "sell"
+    sell_order.status = "filled"
+    sell_order.filled_avg_price = 95.0
+    sell_order.order_type = "stop_limit"
+    sell_order.filled_at = "2026-05-21T15:30:00"
+    sell_order.submitted_at = "2026-05-21T15:30:00"
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "AAPL"
+    pos["status"] = "OPEN"
+
+    mock_get.return_value.get_all_positions.return_value = []   # not open in Alpaca
+    mock_get.return_value.get_orders.return_value = [sell_order]
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    update_kwargs = mock_update.call_args[0][2]
+    assert update_kwargs["close_reason"] == "STOP"
+    assert update_kwargs["exit_mechanism"] == "STOP"
+    assert update_kwargs["realized_pnl"] == round((95.0 - 100.0) * 10, 2)   # -$50
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_limit_classified_as_target(mock_get, mock_select, mock_update):
+    """Pure limit sell = take-profit hit → TARGET."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    sell_order = MagicMock()
+    sell_order.symbol = "AAPL"
+    sell_order.side = "sell"
+    sell_order.status = "filled"
+    sell_order.filled_avg_price = 110.0
+    sell_order.order_type = "limit"
+    sell_order.filled_at = "2026-05-21T15:30:00"
+    sell_order.submitted_at = "2026-05-21T15:30:00"
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "AAPL"
+    pos["status"] = "OPEN"
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = [sell_order]
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    update_kwargs = mock_update.call_args[0][2]
+    assert update_kwargs["close_reason"] == "TARGET"
+    assert update_kwargs["exit_mechanism"] == "TARGET"
+    assert update_kwargs["realized_pnl"] == round((110.0 - 100.0) * 10, 2)   # +$100
+
+
 @patch("agents.alpaca_broker._get")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker.db.update")

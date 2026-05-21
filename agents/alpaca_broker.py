@@ -258,7 +258,7 @@ def _reconcile_with_alpaca() -> None:
         if sell_order and sell_order.filled_avg_price:
             close_price = float(sell_order.filled_avg_price)
             type_str    = str(sell_order.order_type).lower()
-            mechanism   = "TARGET" if "limit" in type_str else ("NATIVE_TRAIL" if "trailing" in type_str else "STOP")
+            mechanism   = "NATIVE_TRAIL" if "trailing" in type_str else ("STOP" if "stop" in type_str else "TARGET")
             entry       = float(pos.get("fill_price") or pos.get("entry_price") or 0)
             shares      = int(pos.get("shares") or 0)
             realized    = round((close_price - entry) * shares, 2)
