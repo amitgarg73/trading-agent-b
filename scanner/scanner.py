@@ -124,6 +124,7 @@ def _behavioral_score(ticker: str, df: pd.DataFrame, info: dict) -> dict:
             score -= 1; signals.append(f"Negative sector RS ({rs_vs_sector:.1f}x)")
 
     return {
+        "atr":            round(atr_avg, 2) if atr_avg else None,
         "atr_ratio":      atr_ratio,
         "above_vwap":     above_vwap,
         "vwap_signal":    vwap_signal,
@@ -230,6 +231,7 @@ def _score_ticker(ticker: str) -> dict | None:
         "vwap_reclaim":   behavioral["vwap_reclaim"],
         "vwap_signal":    behavioral["vwap_signal"],
         "gap_pct":        behavioral["gap_pct"],
+        "atr":            behavioral["atr"],
         "atr_ratio":      behavioral["atr_ratio"],
         "rs_vs_sector":   behavioral["rs_vs_sector"],
         "signals":        signals + behavioral["behavior_signals"],
