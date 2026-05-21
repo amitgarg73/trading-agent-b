@@ -141,11 +141,11 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         print(f"  🏆 Intraday scan skipped: bonus target reached (${total:,.2f})")
         return
 
-    # Get Pool 3 tickers from today's premarket plan
-    today_plan    = db.select("b_trade_plans", filters={"date": today})
-    pool3_tickers = today_plan[0].get("pool3_tickers", []) if today_plan else []
+    # Re-run pool filter live — independent of premarket plan
+    from scanner.pool_filter import get_pool3_tickers
+    pool3_tickers = get_pool3_tickers()
     if not pool3_tickers:
-        print("  📊 Intraday scan: no Pool 3 tickers for today")
+        print("  📊 Intraday scan: no Pool 3 tickers available right now")
         return
 
     available_slots = MAX_POSITIONS - open_count
