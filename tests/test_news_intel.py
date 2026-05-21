@@ -96,22 +96,23 @@ def test_run_empty_candidates():
 
 
 def test_run_blocks_earnings_today():
+    # Earnings blackout disabled for Strategy B — all candidates pass through
     today = date.today()
     with patch("agents.news_intel._get_earnings_date", return_value=today), \
          patch("agents.news_intel._get_news", return_value=[]):
         result = news_intel.run([_candidate("AAPL")])
-    assert result["filtered_candidates"] == []
-    assert len(result["blackout_tickers"]) == 1
-    assert result["blackout_tickers"][0]["ticker"] == "AAPL"
+    assert len(result["filtered_candidates"]) == 1
+    assert result["blackout_tickers"] == []
 
 
 def test_run_blocks_earnings_tomorrow():
+    # Earnings blackout disabled for Strategy B — all candidates pass through
     tomorrow = date.today() + timedelta(days=1)
     with patch("agents.news_intel._get_earnings_date", return_value=tomorrow), \
          patch("agents.news_intel._get_news", return_value=[]):
         result = news_intel.run([_candidate("MSFT")])
-    assert result["filtered_candidates"] == []
-    assert result["blackout_tickers"][0]["ticker"] == "MSFT"
+    assert len(result["filtered_candidates"]) == 1
+    assert result["blackout_tickers"] == []
 
 
 def test_run_passes_non_earnings_candidates():
@@ -131,6 +132,7 @@ def test_run_earnings_far_future_not_blocked():
 
 
 def test_run_mixed_candidates():
+    # Earnings blackout disabled for Strategy B — all candidates pass through
     today = date.today()
     candidates = [_candidate("AAPL"), _candidate("MSFT"), _candidate("GOOGL")]
 
@@ -141,10 +143,10 @@ def test_run_mixed_candidates():
          patch("agents.news_intel._get_news", return_value=[]):
         result = news_intel.run(candidates)
     tickers = [c["ticker"] for c in result["filtered_candidates"]]
-    assert "MSFT" not in tickers
+    assert "MSFT" in tickers
     assert "AAPL" in tickers
     assert "GOOGL" in tickers
-    assert len(result["blackout_tickers"]) == 1
+    assert result["blackout_tickers"] == []
 
 
 def test_run_news_context_built():
