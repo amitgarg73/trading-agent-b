@@ -152,7 +152,7 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
             # Verify order filled (not cancelled/rejected) before writing to DB
             fill_price     = None
             order_accepted = False
-            for _ in range(5):
+            for _ in range(15):
                 time.sleep(1)
                 try:
                     filled = broker.get_order_by_id(str(order.id))
@@ -168,7 +168,7 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                     pass
 
             if not order_accepted:
-                print(f"[alpaca] {ticker} — could not confirm fill after 5s, skipping DB write")
+                print(f"[alpaca] {ticker} — could not confirm fill after 15s, skipping DB write")
                 continue  # don't write a phantom position
 
             planned_entry = float(trade["entry_price"])

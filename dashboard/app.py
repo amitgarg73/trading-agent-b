@@ -113,7 +113,8 @@ if page == "Summary":
 
     plans  = db.select("b_trade_plans", filters={"date": today_str}, limit=1)
     plan   = plans[0] if plans else None
-    trades = db.select("b_planned_trades", filters={"plan_id": plan["id"]}) if plan else []
+    trades = [t for t in (db.select("b_planned_trades", filters={"plan_id": plan["id"]}) if plan else [])
+              if t.get("status") != "CANCELLED"]
 
     all_open   = db.select("b_positions", filters={"status": "OPEN"})
     all_closed = db.select("b_positions", filters={"status": "CLOSED"})
@@ -298,7 +299,8 @@ elif page == "Today":
 
     trades = []
     if plan:
-        trades = db.select("b_planned_trades", filters={"plan_id": plan["id"]})
+        trades = [t for t in db.select("b_planned_trades", filters={"plan_id": plan["id"]})
+                  if t.get("status") != "CANCELLED"]
 
     open_pos     = db.select("b_positions", filters={"status": "OPEN"})
     all_closed   = db.select("b_positions", filters={"status": "CLOSED"})
@@ -396,12 +398,26 @@ elif page == "Today":
 
     st.divider()
 
-    # --- Pool 3 tickers ---
+    # --- Pool 3 tickers — color-coded by traded/open/available ---
     if pool3:
         st.subheader("Today's Pool 3")
+        open_tickers   = {p["ticker"] for p in open_pos}
+        closed_tickers = {p["ticker"] for p in today_closed}
         cols = st.columns(min(len(pool3), 5))
         for i, t in enumerate(pool3):
-            cols[i % 5].metric(t, SECTOR_MAP.get(t, "—"))
+            sector = SECTOR_MAP.get(t, "—")
+            if t in open_tickers:
+                pos = pos_by_ticker.get(t, {})
+                unreal = float(pos.get("unrealized_pnl") or 0)
+                cols[i % 5].metric(t, sector, delta=f"{_fmt_pnl(unreal)} open",
+                                   delta_color="normal" if unreal >= 0 else "inverse")
+            elif t in closed_tickers:
+                pos = pos_by_ticker.get(t, {})
+                real = float(pos.get("realized_pnl") or 0)
+                cols[i % 5].metric(t, sector, delta=f"{_fmt_pnl(real)} closed",
+                                   delta_color="normal" if real >= 0 else "inverse")
+            else:
+                cols[i % 5].metric(t, sector)
         st.divider()
 
     # --- Trade plan table (executed trades only — no pending) ---
