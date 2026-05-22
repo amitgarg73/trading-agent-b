@@ -131,3 +131,27 @@ def test_target_formula_deviation_rejected(mock_price, mock_bp, mock_traded):
     passed, rejected = check([_make_trade(target_price=115.00)])
     assert len(passed) == 0
     assert any("target" in r.lower() for r in rejected)
+
+
+@patch("agents.guardrails._traded_today", return_value=set())
+@patch("agents.guardrails._get_buying_power", return_value=50_000.0)
+@patch("agents.guardrails._current_price", return_value=100.00)
+def test_intraday_capped_trade_passes(mock_price, mock_bp, mock_traded):
+    """Intraday-capped trade (1% target / 0.67% stop = 1.49 R:R) must pass with MIN_REWARD_RISK=1.4."""
+    from config.settings import INTRADAY_TARGET_PCT, MAX_LOSS_PER_TRADE
+    entry  = 100.00
+    target = round(entry * (1 + INTRADAY_TARGET_PCT), 2)  # 1% target
+    stop   = round(entry * (1 - MAX_LOSS_PER_TRADE), 2)
+    shares = 35
+    profit = round(shares * (target - entry), 2)
+    loss   = round(shares * (entry - stop), 2)
+    trade  = _make_trade(
+        target_price=target,
+        stop_loss=stop,
+        shares=shares,
+        estimated_profit=profit,
+        reward_risk=round(profit / loss, 2),
+    )
+    passed, rejected = check([trade])
+    assert len(passed) == 1, f"Intraday trade blocked: {rejected}"
+    assert len(rejected) == 0

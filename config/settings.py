@@ -20,7 +20,7 @@ MAX_POSITION_PCT     = 0.07
 MIN_POSITION_PCT     = 0.05
 MAX_POSITIONS        = 10           # fewer positions — blue chip focus
 MAX_LOSS_PER_TRADE   = 0.0067
-MIN_REWARD_RISK      = 2.9
+MIN_REWARD_RISK      = 1.4   # intraday 1% target / 0.67% stop = 1.49:1 — set below actual to give margin
 TARGET_PCT           = 0.02
 MAX_PER_SECTOR       = 2           # tighter sector limit — 25 stock universe
 DAILY_LOSS_PCT       = 0.01       # 1% of capital — daily net loss limit (realized + unrealized)

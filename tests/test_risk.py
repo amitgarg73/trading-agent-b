@@ -69,6 +69,6 @@ def test_position_size_too_large_rejected(mock_pnl, mock_select):
 @patch("agents.risk.db.select", return_value=[])
 @patch("agents.risk._today_realized_pnl", return_value=0.0)
 def test_rr_below_minimum_rejected(mock_pnl, mock_select):
-    approved, rejected = validate([_trade(rr=1.5)])
+    approved, rejected = validate([_trade(rr=1.2)])  # below MIN_REWARD_RISK=1.4
     assert len(approved) == 0
     assert any("r:r" in r.lower() for r in rejected)

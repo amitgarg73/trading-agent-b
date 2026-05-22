@@ -58,9 +58,13 @@ def _cap_intraday_targets(trades: list[dict]) -> list[dict]:
         entry      = float(t["entry_price"])
         max_target = round(entry * (1 + INTRADAY_TARGET_PCT), 2)
         if float(t.get("target_price", 0)) > max_target:
-            shares = int(t.get("shares", 0))
+            shares   = int(t.get("shares", 0))
+            profit   = round(shares * (max_target - entry), 2)
+            stop     = float(t.get("stop_loss", entry))
+            max_loss = round(shares * (entry - stop), 2)
+            rr       = round(profit / max_loss, 2) if max_loss > 0 else 0
             t = {**t, "target_price": max_target,
-                 "estimated_profit": round(shares * (max_target - entry), 2)}
+                 "estimated_profit": profit, "reward_risk": rr}
         result.append(t)
     return result
 
