@@ -64,6 +64,7 @@ def scan_alpaca(universe: list[str]) -> list[dict]:
         candidates.append({
             "ticker":           ticker,
             "technical_score":  score,
+            "pool":             2,
             "action":           "BUY",
             "current_price":    price,
             "entry_price":      price,
@@ -117,6 +118,7 @@ def scan_simulation(universe: list[str]) -> list[dict]:
             candidates.append({
                 "ticker":           ticker,
                 "technical_score":  score,
+                "pool":             2,
                 "action":           "BUY",
                 "current_price":    round(current, 2),
                 "entry_price":      round(current, 2),

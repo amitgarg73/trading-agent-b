@@ -193,3 +193,37 @@ def test_scan_returns_empty_on_exception():
     with patch("scanner.intraday_momentum.scan_alpaca", side_effect=Exception("fail")):
         result = intraday_momentum.scan(["AAPL"], broker="alpaca")
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# pool field (strategy time-of-day fix)
+# ---------------------------------------------------------------------------
+
+def test_scan_alpaca_candidates_include_pool_2():
+    """scan_alpaca must include pool: 2 so Claude applies Pool 2 time-of-day rules."""
+    signals = {
+        "SPY":  SPY_UP,
+        "AAPL": {"today_pct_change": 4.0, "above_vwap": True, "rs_vs_spy": 2.0, "vwap": 180.0},
+    }
+    with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
+         patch("agents.alpaca_broker.get_live_prices", return_value={"AAPL": 185.0}):
+        result = intraday_momentum.scan_alpaca(["AAPL"])
+    assert len(result) == 1
+    assert result[0]["pool"] == 2, "momentum candidates must have pool=2 for strategy time-of-day routing"
+
+
+def test_scan_simulation_candidates_include_pool_2():
+    """scan_simulation must include pool: 2 on every candidate."""
+    df = _mock_yf_df(100.0, 104.0)
+    with patch("yfinance.download", return_value=df):
+        result = intraday_momentum.scan_simulation(["AAPL"])
+    assert len(result) == 1
+    assert result[0]["pool"] == 2, "simulation candidates must have pool=2 for strategy time-of-day routing"
+
+
+def test_strategy_system_prompt_includes_intraday_momentum_exception():
+    """SYSTEM prompt must mention INTRADAY_MOMENTUM exception so Claude doesn't skip afternoon candidates."""
+    from agents.strategy import SYSTEM
+    assert "INTRADAY_MOMENTUM" in SYSTEM, (
+        "strategy SYSTEM prompt must include INTRADAY_MOMENTUM exception in time-of-day rules"
+    )

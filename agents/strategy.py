@@ -79,6 +79,7 @@ The current ET time is provided in the user message. Adjust selectivity based on
 - Before 10:30 AM: prefer confirmed breakouts; blue chip VWAP reclaims are ideal
 - 10:30 AM–1:00 PM: prime window — all valid setups, full position count
 - 1:00–2:30 PM: reduce to top 2-3 Pool 2 stocks only; skip Pool 1 in this window
+  Exception: candidates with signal_type "INTRADAY_MOMENTUM" are confirmed movers already running today — they are valid entries at any hour, bypass the pool restriction
 - After 2:30 PM: only enter if ATR target is ≤50% of daily range; skip low rolling_score stocks
 - After 3:00 PM: do not enter new positions
 
