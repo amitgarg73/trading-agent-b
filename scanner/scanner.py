@@ -136,7 +136,7 @@ def _behavioral_score(ticker: str, df: pd.DataFrame, info: dict) -> dict:
     }
 
 
-def _score_ticker(ticker: str) -> dict | None:
+def _score_ticker(ticker: str, skip_volume_surge: bool = False) -> dict | None:
     info, df = _fetch(ticker)
     if df is None or info is None:
         return None
@@ -152,7 +152,7 @@ def _score_ticker(ticker: str) -> dict | None:
         return None
 
     vol_ratio = round(cur_vol / avg_vol, 2) if avg_vol else 0
-    if vol_ratio < MIN_VOLUME_RATIO:
+    if not skip_volume_surge and vol_ratio < MIN_VOLUME_RATIO:
         return None
 
     score   = 0
@@ -187,11 +187,12 @@ def _score_ticker(ticker: str) -> dict | None:
         elif cur_price >= bb_upper:
             score -= 1; bb_signal = "UPPER"
 
-    # Volume
-    if vol_ratio >= 2.0:
-        score += 2; signals.append(f"High volume ({vol_ratio:.1f}x)")
-    elif vol_ratio >= 1.5:
-        score += 1; signals.append(f"Elevated volume ({vol_ratio:.1f}x)")
+    # Volume — skipped at premarket (partial day vs full-day avg is meaningless at open)
+    if not skip_volume_surge:
+        if vol_ratio >= 2.0:
+            score += 2; signals.append(f"High volume ({vol_ratio:.1f}x)")
+        elif vol_ratio >= 1.5:
+            score += 1; signals.append(f"Elevated volume ({vol_ratio:.1f}x)")
 
     # SMA context
     sma20 = close.tail(20).mean()
@@ -239,11 +240,11 @@ def _score_ticker(ticker: str) -> dict | None:
     }
 
 
-def run_scan(tickers: list[str], workers: int = 8) -> list[dict]:
+def run_scan(tickers: list[str], workers: int = 8, skip_volume_surge: bool = False) -> list[dict]:
     """Scan tickers in parallel, return scored candidates sorted by total_score desc."""
     candidates = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_score_ticker, t): t for t in tickers}
+        futures = {ex.submit(_score_ticker, t, skip_volume_surge): t for t in tickers}
         for fut in as_completed(futures):
             try:
                 result = fut.result()

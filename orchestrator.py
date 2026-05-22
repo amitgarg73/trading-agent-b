@@ -316,7 +316,7 @@ def premarket(broker: str = "alpaca") -> None:
 
     # 3. Scan Pool 3 tickers
     print(f"\n[3] Scanning {len(pool3_tickers)} Pool 3 tickers...")
-    candidates = run_scan(pool3_tickers)
+    candidates = run_scan(pool3_tickers, skip_volume_surge=True)
     print(f"    {len(candidates)} candidates after scan")
 
     # 3.5 Earnings blackout + news intelligence
