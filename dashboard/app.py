@@ -398,26 +398,42 @@ elif page == "Today":
 
     st.divider()
 
-    # --- Pool 3 tickers — color-coded by traded/open/available ---
+    # --- Pool 3 tickers — color-coded cards ---
     if pool3:
         st.subheader("Today's Pool 3")
         open_tickers   = {p["ticker"] for p in open_pos}
         closed_tickers = {p["ticker"] for p in today_closed}
-        cols = st.columns(min(len(pool3), 5))
+        cols = st.columns(5)
         for i, t in enumerate(pool3):
             sector = SECTOR_MAP.get(t, "—")
             if t in open_tickers:
-                pos = pos_by_ticker.get(t, {})
+                pos    = pos_by_ticker.get(t, {})
                 unreal = float(pos.get("unrealized_pnl") or 0)
-                cols[i % 5].metric(t, sector, delta=f"{_fmt_pnl(unreal)} open",
-                                   delta_color="normal" if unreal >= 0 else "inverse")
+                pnl_str = _fmt_pnl(unreal)
+                pnl_clr = "#2ecc71" if unreal >= 0 else "#e74c3c"
+                badge   = f"<div style='font-size:11px;color:{pnl_clr};margin-top:2px'>{pnl_str} open</div>"
+                bg      = "#1a3a2a"
+                border  = "#2ecc71"
             elif t in closed_tickers:
-                pos = pos_by_ticker.get(t, {})
+                pos  = pos_by_ticker.get(t, {})
                 real = float(pos.get("realized_pnl") or 0)
-                cols[i % 5].metric(t, sector, delta=f"{_fmt_pnl(real)} closed",
-                                   delta_color="normal" if real >= 0 else "inverse")
+                pnl_str = _fmt_pnl(real)
+                pnl_clr = "#2ecc71" if real >= 0 else "#e74c3c"
+                badge   = f"<div style='font-size:11px;color:{pnl_clr};margin-top:2px'>{pnl_str} closed</div>"
+                bg      = "#1a1a2e"
+                border  = "#7f8c8d"
             else:
-                cols[i % 5].metric(t, sector)
+                badge  = ""
+                bg     = "#1c1c1c"
+                border = "#333"
+            cols[i % 5].markdown(
+                f"<div style='background:{bg};border:1px solid {border};border-radius:8px;"
+                f"padding:10px 12px;margin-bottom:8px;min-height:64px'>"
+                f"<div style='font-size:15px;font-weight:700;color:#fff'>{t}</div>"
+                f"<div style='font-size:11px;color:#888;margin-top:1px'>{sector}</div>"
+                f"{badge}</div>",
+                unsafe_allow_html=True,
+            )
         st.divider()
 
     # --- Trade plan table (executed trades only — no pending) ---
