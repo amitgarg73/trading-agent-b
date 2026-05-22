@@ -64,7 +64,7 @@ INTRADAY_SCAN_MAX_RUNS          = 6    # hourly: 10 AM, 11 AM, 12 PM, 1 PM, 2 PM
 INTRADAY_SCAN_MIN_INTERVAL_MINS = 55   # ~1 hr apart (55 min absorbs GH Actions delay)
 INTRADAY_TARGET_PCT             = 0.01
 MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal)
-MIN_SPY_MOVE_PCT                = 0.3   # SPY must be up >= this % for intraday gate to open
+MIN_SPY_MOVE_PCT                = 0.1   # SPY must be up >= this % for intraday gate to open
 
 # Pool system thresholds
 POOL_PROMOTION_SCORE   = 6.0    # 7-day rolling score to promote Pool 1 → Pool 2

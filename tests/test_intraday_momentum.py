@@ -61,7 +61,7 @@ def test_scan_alpaca_returns_candidates_above_threshold():
 
 def test_scan_alpaca_spy_gate_blocks_when_market_flat():
     signals = {
-        "SPY":  {"today_pct_change": 0.1, "above_vwap": True, "rs_vs_spy": None, "vwap": 550.0},
+        "SPY":  {"today_pct_change": 0.05, "above_vwap": True, "rs_vs_spy": None, "vwap": 550.0},
         "AAPL": {"today_pct_change": 1.0, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0},
     }
     with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
