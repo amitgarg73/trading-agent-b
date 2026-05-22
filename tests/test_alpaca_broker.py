@@ -128,13 +128,15 @@ def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_s
 
 # ── Reconciliation: UNFILLED detection ───────────────────────────────────────
 
-def _buy_order(symbol, status, submitted_at="2026-05-21T15:00:00"):
+def _buy_order(symbol, status, submitted_at=None):
+    from datetime import datetime
+    ts = submitted_at or datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
     o = MagicMock()
     o.symbol = symbol
     o.side = "buy"
     o.status = status
-    o.filled_at = submitted_at
-    o.submitted_at = submitted_at
+    o.filled_at = ts
+    o.submitted_at = ts
     return o
 
 
