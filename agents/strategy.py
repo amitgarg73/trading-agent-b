@@ -33,9 +33,8 @@ Always respond with valid JSON only — no markdown, no text outside the JSON ob
     HIGH   → ${_sizes['HIGH']:,}
     MEDIUM → ${_sizes['MEDIUM']:,}
     LOW    → ${_sizes['LOW']:,}
-- Profit target: 0.75 × ATR above entry — adapts to each stock's actual volatility
-- Stop loss: 0.25 × ATR below entry — 3:1 reward:risk guaranteed by construction
-- ATR = 14-day Average True Range provided per candidate (atr field, dollar value)
+- Profit target: {TARGET_PCT*100:.0f}% above entry (hard rule)
+- Stop loss: {MAX_LOSS_PER_TRADE*100:.2f}% below entry (hard rule)
 - Minimum reward:risk: {MIN_REWARD_RISK}:1
 - BUY only — no shorting, no overnight holds
 
@@ -61,13 +60,13 @@ Each candidate includes:
 6. Zero trades is valid when no setup meets the bar
 
 ## HARD CALCULATION RULES
-- target_price  = round(entry_price + 0.75 * atr, 2)
-- stop_loss     = round(entry_price - 0.25 * atr, 2)
+- target_price  = round(entry_price * {1+TARGET_PCT}, 2)
+- stop_loss     = round(entry_price * {1-MAX_LOSS_PER_TRADE}, 2)
 - shares        = int(position_size / entry_price)
 - estimated_profit = round(shares * (target_price - entry_price), 2)
 - max_loss         = round(shares * (entry_price - stop_loss), 2)
-- reward_risk      = round(estimated_profit / max_loss, 2)   # will be ≈3.0 by construction
-- If atr is missing for a candidate, skip it — do not substitute a fixed %
+- reward_risk      = round(estimated_profit / max_loss, 2)
+- Use atr_ratio as context: if atr_ratio > 1.8, intraday range is extended — stock may overshoot stop; skip unless rolling_score is high
 
 ## CONFIDENCE ASSIGNMENT
 HIGH:   total_score >= 7 AND volume_ratio > 1.5 AND (above_vwap OR rs_vs_sector > 1.5)
