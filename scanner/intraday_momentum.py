@@ -1,18 +1,15 @@
 """
-Intraday momentum scanner — finds Pool 3 stocks already moving strongly today.
+Intraday scanner — Option 2 market-participation signal for blue chips.
 
-Logic:
-- Alpaca mode: uses snapshot API (today_pct_change, above_vwap, rs_vs_spy)
-- Simulation mode: uses yfinance 5-min data for today's open → current move
+Trigger: SPY up >= MIN_SPY_MOVE_PCT AND stock above VWAP AND stock up >= MIN_INTRADAY_MOVE_PCT (0.5%).
+This catches blue chips participating in a genuine up-market day rather than
+waiting for individual stock momentum spikes (rare for large caps).
 
-Returns candidates in the same format as scanner.run_scan() so they can be
-passed directly into strategy.select_trades() for intraday entry decisions.
-
-Blue chip note: MIN_INTRADAY_MOVE_PCT is 2.0 (vs 4.0 in Strategy A) because
-blue chips move less but with higher conviction — lower threshold is appropriate.
+Alpaca mode: snapshot API (today_pct_change, above_vwap, rs_vs_spy) + SPY gate.
+Simulation mode: yfinance 5-min data. No SPY gate (used for dev/backtest).
 """
 from __future__ import annotations
-from config.settings import MIN_INTRADAY_MOVE_PCT, SCORE_THRESHOLD
+from config.settings import MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT, SCORE_THRESHOLD
 
 
 def _momentum_score(pct_change: float, rs_vs_spy: float | None) -> int:
@@ -30,17 +27,26 @@ def _momentum_score(pct_change: float, rs_vs_spy: float | None) -> int:
 
 def scan_alpaca(universe: list[str]) -> list[dict]:
     """
-    Fetch intraday signals for Pool 3 via Alpaca snapshot API.
-    Returns candidates that are up >= MIN_INTRADAY_MOVE_PCT, above VWAP,
-    and not too extended (< 30%).
+    Option 2 market-participation scan via Alpaca snapshot API.
+    Gate 1: SPY must be up >= MIN_SPY_MOVE_PCT — confirms market is genuinely up.
+    Gate 2: stock above VWAP AND up >= MIN_INTRADAY_MOVE_PCT (0.5%) — confirms participation.
     """
     from agents import alpaca_broker
 
-    signals = alpaca_broker.get_intraday_signals(universe)
-    live    = alpaca_broker.get_live_prices(list(signals.keys()))
+    # Include SPY so we can check market direction
+    signals = alpaca_broker.get_intraday_signals(list(set(universe + ["SPY"])))
+    live    = alpaca_broker.get_live_prices([t for t in signals if t != "SPY"])
+
+    # SPY gate — market must be up
+    spy_pct = (signals.get("SPY") or {}).get("today_pct_change") or 0
+    if spy_pct < MIN_SPY_MOVE_PCT:
+        print(f"        [intraday-b] SPY +{spy_pct:.2f}% — market gate not met (need +{MIN_SPY_MOVE_PCT}%)")
+        return []
 
     candidates = []
     for ticker, sig in signals.items():
+        if ticker == "SPY":
+            continue
         pct        = sig.get("today_pct_change") or 0
         above_vwap = sig.get("above_vwap", False)
         rs         = sig.get("rs_vs_spy")

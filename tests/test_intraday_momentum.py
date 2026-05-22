@@ -3,7 +3,9 @@ from __future__ import annotations
 from unittest.mock import patch, MagicMock
 import pytest
 from scanner import intraday_momentum
-from config.settings import SCORE_THRESHOLD, MIN_INTRADAY_MOVE_PCT
+from config.settings import SCORE_THRESHOLD, MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT
+
+SPY_UP = {"today_pct_change": 0.5, "above_vwap": True, "rs_vs_spy": None, "vwap": 550.0}
 
 
 # ---------------------------------------------------------------------------
@@ -45,6 +47,7 @@ def test_momentum_score_capped_at_10():
 
 def test_scan_alpaca_returns_candidates_above_threshold():
     signals = {
+        "SPY":  SPY_UP,
         "AAPL": {"today_pct_change": 3.0, "above_vwap": True, "rs_vs_spy": 1.5, "vwap": 180.0},
     }
     live_prices = {"AAPL": 182.0}
@@ -56,9 +59,21 @@ def test_scan_alpaca_returns_candidates_above_threshold():
     assert result[0]["signal_type"] == "INTRADAY_MOMENTUM"
 
 
+def test_scan_alpaca_spy_gate_blocks_when_market_flat():
+    signals = {
+        "SPY":  {"today_pct_change": 0.1, "above_vwap": True, "rs_vs_spy": None, "vwap": 550.0},
+        "AAPL": {"today_pct_change": 1.0, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0},
+    }
+    with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
+         patch("agents.alpaca_broker.get_live_prices", return_value={}):
+        result = intraday_momentum.scan_alpaca(["AAPL"])
+    assert result == []
+
+
 def test_scan_alpaca_filters_below_min_move():
     signals = {
-        "AAPL": {"today_pct_change": 0.5, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0},
+        "SPY":  SPY_UP,
+        "AAPL": {"today_pct_change": 0.3, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0},
     }
     with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
          patch("agents.alpaca_broker.get_live_prices", return_value={}):
@@ -68,6 +83,7 @@ def test_scan_alpaca_filters_below_min_move():
 
 def test_scan_alpaca_filters_not_above_vwap():
     signals = {
+        "SPY":  SPY_UP,
         "AAPL": {"today_pct_change": 5.0, "above_vwap": False, "rs_vs_spy": 2.0, "vwap": 180.0},
     }
     with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
@@ -78,6 +94,7 @@ def test_scan_alpaca_filters_not_above_vwap():
 
 def test_scan_alpaca_filters_extended_move():
     signals = {
+        "SPY":  SPY_UP,
         "AAPL": {"today_pct_change": 35.0, "above_vwap": True, "rs_vs_spy": 5.0, "vwap": 180.0},
     }
     with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
@@ -88,6 +105,7 @@ def test_scan_alpaca_filters_extended_move():
 
 def test_scan_alpaca_sorted_by_rs_then_pct():
     signals = {
+        "SPY":  SPY_UP,
         "AAPL": {"today_pct_change": 3.0, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0},
         "MSFT": {"today_pct_change": 2.5, "above_vwap": True, "rs_vs_spy": 3.0, "vwap": 300.0},
     }
@@ -99,10 +117,11 @@ def test_scan_alpaca_sorted_by_rs_then_pct():
 
 def test_scan_alpaca_uses_live_price_over_vwap():
     signals = {
+        "SPY":  SPY_UP,
         "AAPL": {"today_pct_change": 3.0, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0},
     }
-    with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
-         patch("agents.alpaca_broker.get_live_prices", return_value={"AAPL": 185.0}):
+    with patch("agents.alpaca_broker.get_live_prices", return_value={"AAPL": 185.0}), \
+         patch("agents.alpaca_broker.get_intraday_signals", return_value=signals):
         result = intraday_momentum.scan_alpaca(["AAPL"])
     assert result[0]["entry_price"] == 185.0
 
@@ -135,7 +154,7 @@ def test_scan_simulation_passes_mover():
 
 
 def test_scan_simulation_filters_below_threshold():
-    df = _mock_yf_df(100.0, 100.5)  # 0.5% — below MIN_INTRADAY_MOVE_PCT
+    df = _mock_yf_df(100.0, 100.3)  # 0.3% — below MIN_INTRADAY_MOVE_PCT (0.5%)
     with patch("yfinance.download", return_value=df):
         result = intraday_momentum.scan_simulation(["AAPL"])
     assert result == []

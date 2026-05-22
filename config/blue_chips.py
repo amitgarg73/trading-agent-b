@@ -1,7 +1,7 @@
 """
 Blue chip universe for Strategy B.
 
-Pool 2 seed: 25 curated large-cap stocks with high liquidity, predictable
+Pool 2 seed: 40 curated large-cap stocks with high liquidity, predictable
 behavioral patterns, and strong institutional coverage. Organized by sector
 for diversification awareness.
 
@@ -13,22 +13,25 @@ Stocks can be promoted from Pool 1 → Pool 2 based on 7-day rolling score.
 MAG_7 = ["AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "TSLA"]
 
 # --- Financials ---
-FINANCIALS = ["JPM", "GS", "V", "MA", "BAC"]
+FINANCIALS = ["JPM", "GS", "V", "MA", "BAC", "PYPL"]
 
 # --- Healthcare ---
-HEALTHCARE = ["UNH", "LLY", "JNJ"]
+HEALTHCARE = ["UNH", "LLY", "JNJ", "ISRG", "VRTX"]
 
-# --- Energy ---
-ENERGY = ["XOM", "CVX"]
+# --- Energy / Materials ---
+ENERGY = ["XOM", "CVX", "FCX"]
 
 # --- Consumer ---
-CONSUMER = ["WMT", "COST", "HD"]
+CONSUMER = ["WMT", "COST", "HD", "SHOP"]
 
 # --- Tech / Semis / Growth ---
-TECH_GROWTH = ["AMD", "AVGO", "NFLX", "CRM", "ORCL"]
+TECH_GROWTH = ["AMD", "AVGO", "NFLX", "CRM", "ORCL", "ARM", "MRVL"]
 
-# Pool 2 seed — 25 blue chips, starts in pool 2 on day 1
-POOL_2_SEED: list[str] = MAG_7 + FINANCIALS + HEALTHCARE + ENERGY + CONSUMER + TECH_GROWTH
+# --- Enterprise / Cyber / AI ---
+ENTERPRISE_AI = ["PANW", "CRWD", "NOW", "PLTR", "UBER"]
+
+# Pool 2 seed — 40 blue chips, starts in pool 2 on day 1
+POOL_2_SEED: list[str] = MAG_7 + FINANCIALS + HEALTHCARE + ENERGY + CONSUMER + TECH_GROWTH + ENTERPRISE_AI
 
 # Pool 1 broader liquid universe — top S&P 500 by avg daily volume > 5M
 # Excludes Pool 2 seed (they start in pool 2 directly)
@@ -84,6 +87,18 @@ SECTOR_MAP: dict[str, str] = {
     "AMD": "Technology", "AVGO": "Technology", "INTC": "Technology",
     "QCOM": "Technology", "MU": "Technology", "AMAT": "Technology",
     "TXN": "Technology", "CRM": "Technology", "ORCL": "Technology",
+    "ARM": "Technology", "MRVL": "Technology",
+    # Enterprise / Cyber / AI
+    "PANW": "Technology", "CRWD": "Technology", "NOW": "Technology",
+    "PLTR": "Technology", "UBER": "Consumer Discretionary",
+    # New Healthcare
+    "ISRG": "Healthcare", "VRTX": "Healthcare",
+    # New Fintech
+    "PYPL": "Financials",
+    # New Consumer
+    "SHOP": "Consumer Discretionary",
+    # New Materials
+    "FCX": "Materials",
     # Communication
     "NFLX": "Communication", "DIS": "Communication",
     "CMCSA": "Communication", "T": "Communication", "VZ": "Communication",
