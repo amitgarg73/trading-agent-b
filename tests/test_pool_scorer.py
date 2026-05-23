@@ -5,7 +5,7 @@ from config.settings import (
     SCORE_WEIGHT_WIN_LOSS, SCORE_WEIGHT_PNL, SCORE_WEIGHT_SLIPPAGE,
     SCORE_WEIGHT_SETUP,
 )
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 
 def test_win_scores_higher_than_loss():
@@ -124,3 +124,66 @@ def test_rolling_score_averages_history(mock_select):
     # Recent day (yesterday) gets 2x weight, today gets 2x weight
     # weighted avg of [9.0*2, 5.0*2] / (2+2) = (18+10)/4 = 7.0
     assert 6.0 <= rolling <= 9.0  # between the two values
+
+
+# ── _alpaca_order_pnl reconciliation ────────────────────────────────────────
+
+def _make_order(order_id, cid, filled_price, filled_qty, legs=None):
+    o = MagicMock()
+    o.id = order_id
+    o.client_order_id = cid
+    o.side = "buy"
+    o.filled_avg_price = filled_price
+    o.filled_qty = filled_qty
+    o.legs = legs or []
+    return o
+
+
+def _make_leg(status, filled_price):
+    leg = MagicMock()
+    leg.status = status
+    leg.filled_avg_price = filled_price
+    return leg
+
+
+@patch("agents.alpaca_broker._get")
+def test_b_alpaca_order_pnl_bracket_exit(mock_get):
+    """Bracket exit: P&L from entry fill + exit leg fill."""
+    import pytest
+    buy = _make_order("ord-b1", "stratb_AAPL_20260523120000", 180.0, 15,
+                      legs=[_make_leg("filled", 183.6)])
+    mock_get.return_value.get_orders.return_value = [buy]
+
+    from agents.pool_scorer import _alpaca_order_pnl
+    pnl, note = _alpaca_order_pnl("stratb_", [])
+
+    assert pnl == pytest.approx((183.6 - 180.0) * 15, abs=0.01)
+    assert "1b" in note
+
+
+@patch("agents.alpaca_broker._get")
+def test_b_alpaca_order_pnl_manual_fallback(mock_get):
+    """Manual close with no exit leg: falls back to DB realized_pnl."""
+    import pytest
+    buy = _make_order("ord-b2", "stratb_MSFT_20260523130000", 400.0, 8, legs=[])
+    mock_get.return_value.get_orders.return_value = [buy]
+
+    positions = [{"alpaca_order_id": "ord-b2", "realized_pnl": 120.0}]
+    from agents.pool_scorer import _alpaca_order_pnl
+    pnl, note = _alpaca_order_pnl("stratb_", positions)
+
+    assert pnl == pytest.approx(120.0, abs=0.01)
+    assert "1m" in note
+
+
+@patch("agents.alpaca_broker._get")
+def test_b_alpaca_order_pnl_wrong_tag_returns_none(mock_get):
+    """Orders tagged for strategy A must not match strategy B prefix."""
+    buy = _make_order("ord-b3", "strata_NVDA_ts", 500.0, 5)
+    mock_get.return_value.get_orders.return_value = [buy]
+
+    from agents.pool_scorer import _alpaca_order_pnl
+    pnl, note = _alpaca_order_pnl("stratb_", [])
+
+    assert pnl is None
+    assert "no tagged" in note

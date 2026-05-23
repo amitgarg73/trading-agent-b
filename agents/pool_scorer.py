@@ -15,10 +15,80 @@ from datetime import date, timedelta
 from core import db
 from core import pool_manager
 import yfinance as yf
+from datetime import datetime
 from config.settings import (
     SCORE_WEIGHT_WIN_LOSS, SCORE_WEIGHT_PNL, SCORE_WEIGHT_SLIPPAGE,
     SCORE_WEIGHT_SETUP, SCORE_ROLLING_DAYS, SCORE_RECENT_MULTIPLIER,
+    STRATEGY_TAG,
 )
+
+
+def _alpaca_order_pnl(tag_prefix: str, positions: list) -> tuple[float | None, str]:
+    """
+    Compute per-strategy realized P&L from today's tagged Alpaca bracket orders.
+    For bracket exits: uses actual entry + exit fill prices from Alpaca.
+    For manual closes (bracket legs cancelled): falls back to DB realized_pnl.
+    Returns (pnl, status_note) or (None, reason) if no tagged orders found.
+    """
+    from agents.alpaca_broker import _get as _broker
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    from datetime import time as _t, timezone
+
+    today_start = datetime.combine(date.today(), _t.min).replace(tzinfo=timezone.utc)
+
+    try:
+        all_orders = _broker().get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.CLOSED,
+            after=today_start,
+            limit=500,
+        ))
+    except Exception as e:
+        return None, f"order fetch failed: {e}"
+
+    tagged_buys = [
+        o for o in all_orders
+        if str(o.client_order_id or "").startswith(tag_prefix)
+        and str(o.side).lower() == "buy"
+        and o.filled_avg_price
+    ]
+
+    if not tagged_buys:
+        return None, "no tagged orders found"
+
+    db_by_order_id = {
+        p.get("alpaca_order_id"): p
+        for p in positions
+        if p.get("alpaca_order_id")
+    }
+
+    total = 0.0
+    bracket_exits = 0
+    manual_fallbacks = 0
+
+    for o in tagged_buys:
+        entry_fill = float(o.filled_avg_price)
+        qty = float(o.filled_qty or 0)
+        if qty == 0:
+            continue
+
+        exit_fill = None
+        for leg in (o.legs or []):
+            if str(leg.status).lower() in ("filled", "partially_filled") and leg.filled_avg_price:
+                exit_fill = float(leg.filled_avg_price)
+                break
+
+        if exit_fill is not None:
+            total += (exit_fill - entry_fill) * qty
+            bracket_exits += 1
+        else:
+            db_pos = db_by_order_id.get(str(o.id))
+            if db_pos and db_pos.get("realized_pnl") is not None:
+                total += float(db_pos["realized_pnl"])
+                manual_fallbacks += 1
+
+    note = f"{bracket_exits}b/{manual_fallbacks}m/{len(tagged_buys)} orders"
+    return round(total, 2), note
 
 
 def _compute_daily_score(win: bool | None, pnl: float | None,
@@ -237,7 +307,7 @@ def write_daily_performance() -> None:
         avg_loss = sum(p.get("realized_pnl") or 0 for p in losses) / len(losses) if losses else 0
         exp      = round(win_rate * avg_win + (1 - win_rate) * avg_loss, 2)
 
-        # Alpaca equity reconciliation — only for the total row (pool=None)
+        # Alpaca reconciliation — only for the total row (pool=None)
         alpaca_equity = None
         friction_gap  = None
         friction_breakdown = None
@@ -246,16 +316,19 @@ def write_daily_performance() -> None:
                 from agents.alpaca_broker import _get as _broker
                 account       = _broker().get_account()
                 alpaca_equity = round(float(account.equity), 2)
-                # Strategy B cumulative P&L (all closed positions ever)
-                all_b_perf    = db.select("b_daily_performance", filters={"pool": None})
-                cumulative_b  = sum(r.get("gross_pnl", 0) or 0 for r in all_b_perf)
-                our_calc      = round(50_000 + cumulative_b + round(gross, 2), 2)
-                friction_gap  = round(alpaca_equity - our_calc, 2)
-                gap_sign      = "+" if friction_gap >= 0 else ""
-                print(f"[pool_scorer] Alpaca equity=${alpaca_equity:,.2f} | "
-                      f"B calc=${our_calc:,.2f} | gap={gap_sign}${friction_gap:,.2f}")
+                print(f"[pool_scorer] Alpaca account equity=${alpaca_equity:,.2f} (combined A+B — informational)")
             except Exception as e:
                 print(f"[pool_scorer] Alpaca equity fetch failed: {e}")
+
+            tag_prefix = f"strat{STRATEGY_TAG}_"
+            alpaca_pnl, note = _alpaca_order_pnl(tag_prefix, positions)
+            if alpaca_pnl is not None:
+                friction_gap = round(alpaca_pnl - gross, 2)
+                gap_sign     = "+" if friction_gap >= 0 else ""
+                print(f"[pool_scorer] Strategy {STRATEGY_TAG.upper()} order P&L=${alpaca_pnl:,.2f} | "
+                      f"our calc=${gross:,.2f} | gap={gap_sign}${friction_gap:,.2f} ({note})")
+            else:
+                print(f"[pool_scorer] Order reconciliation: {note}")
 
             fills = [
                 p for p in today_c
