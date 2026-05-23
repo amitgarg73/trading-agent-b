@@ -324,3 +324,173 @@ def test_vwap_exit_skipped_when_r_ladder_protected(mock_price, mock_update, mock
     update_positions_intraday()
 
     mock_close.assert_not_called()
+
+
+# ── Native trail: get_order_fill ─────────────────────────────────────────────
+
+def _bracket_order_with_leg(order_type: str, status: str, fill_price: float) -> MagicMock:
+    """Return a mock parent bracket order with one filled child leg."""
+    leg = MagicMock()
+    leg.status = status
+    leg.order_type = order_type
+    leg.filled_avg_price = fill_price
+    order = MagicMock()
+    order.legs = [leg]
+    return order
+
+
+@patch("agents.alpaca_broker._get")
+def test_get_order_fill_native_trail(mock_get):
+    from agents.alpaca_broker import get_order_fill
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "trailing_stop", "filled", 105.0
+    )
+    price, mechanism = get_order_fill("order-123")
+    assert price == 105.0
+    assert mechanism == "NATIVE_TRAIL"
+
+
+@patch("agents.alpaca_broker._get")
+def test_get_order_fill_target(mock_get):
+    from agents.alpaca_broker import get_order_fill
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "limit", "filled", 112.5
+    )
+    price, mechanism = get_order_fill("order-456")
+    assert price == 112.5
+    assert mechanism == "TARGET"
+
+
+@patch("agents.alpaca_broker._get")
+def test_get_order_fill_stop(mock_get):
+    from agents.alpaca_broker import get_order_fill
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "stop", "filled", 96.0
+    )
+    price, mechanism = get_order_fill("order-789")
+    assert price == 96.0
+    assert mechanism == "STOP"
+
+
+@patch("agents.alpaca_broker._get")
+def test_get_order_fill_no_filled_leg_returns_none(mock_get):
+    """If no leg is filled yet, return (None, None)."""
+    from agents.alpaca_broker import get_order_fill
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "trailing_stop", "pending_new", 0.0
+    )
+    price, mechanism = get_order_fill("order-000")
+    assert price is None
+    assert mechanism is None
+
+
+# ── Native trail: reconcile resolves bracket exits ───────────────────────────
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_bracket_exit_closed_in_db(mock_get, mock_select, mock_update):
+    """When bracket fires (in filled_buys, gone from Alpaca), reconcile closes the DB row."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "AAPL"
+    pos["status"] = "OPEN"
+    pos["alpaca_order_id"] = "parent-order-abc"
+
+    mock_get.return_value.get_all_positions.return_value = []  # gone from Alpaca
+    mock_get.return_value.get_orders.return_value = [_buy_order("AAPL", status="filled")]
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "trailing_stop", "filled", 105.0
+    )
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    mock_update.assert_called_once()
+    kwargs = mock_update.call_args[0][2]
+    assert kwargs["status"] == "CLOSED"
+    assert kwargs["close_reason"] == "NATIVE_TRAIL"
+    assert kwargs["exit_mechanism"] == "NATIVE_TRAIL"
+    assert kwargs["close_price"] == 105.0
+    assert kwargs["realized_pnl"] == pytest.approx((105.0 - 100.0) * 10)
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_bracket_exit_no_filled_leg_skips_update(mock_get, mock_select, mock_update):
+    """If get_order_fill returns None (leg not filled yet), don't close the DB row."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "AAPL"
+    pos["status"] = "OPEN"
+    pos["alpaca_order_id"] = "parent-order-abc"
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = [_buy_order("AAPL", status="filled")]
+    # Leg still pending — not filled yet
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "trailing_stop", "pending_new", 0.0
+    )
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    mock_update.assert_not_called()
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_filled_buy_not_marked_unfilled(mock_get, mock_select, mock_update):
+    """Entry filled (buy=filled) — must never be marked UNFILLED regardless of bracket state."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "AAPL"
+    pos["status"] = "OPEN"
+    # No alpaca_order_id → get_order_fill skipped; position stays open for intraday loop
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = [_buy_order("AAPL", status="filled")]
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    # Must not be marked UNFILLED
+    for call_args in mock_update.call_args_list:
+        kwargs = call_args[0][2] if call_args[0] else call_args[1]
+        assert kwargs.get("close_reason") != "UNFILLED"
+
+
+# ── Native trail: cancel bracket before manual close ─────────────────────────
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker._get")
+def test_close_position_cancels_bracket_before_sell(mock_get, mock_update):
+    """_close_position must cancel the bracket order before submitting the market sell."""
+    mock_get.return_value.submit_order.return_value = MagicMock()
+    mock_get.return_value.get_order_by_id.return_value = _filled_order(107.0)
+
+    pos = _pos(fill=100.0, shares=10, high_wm=107.0, low_wm=100.0)
+    pos["alpaca_order_id"] = "bracket-parent-id"
+
+    _close_position(pos, price=107.0, reason="VWAP_BREAK")
+
+    mock_get.return_value.cancel_order_by_id.assert_called_once_with("bracket-parent-id")
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker._get")
+def test_close_position_no_order_id_skips_cancel(mock_get, mock_update):
+    """If no alpaca_order_id on position, cancel is not attempted."""
+    mock_get.return_value.submit_order.return_value = MagicMock()
+    mock_get.return_value.get_order_by_id.return_value = _filled_order(107.0)
+
+    pos = _pos(fill=100.0, shares=10)  # no alpaca_order_id
+
+    _close_position(pos, price=107.0, reason="EOD")
+
+    mock_get.return_value.cancel_order_by_id.assert_not_called()
