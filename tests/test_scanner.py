@@ -141,3 +141,77 @@ def test_behavioral_score_returns_required_keys(mock_sector):
     for key in ("atr_ratio", "above_vwap", "vwap_signal", "vwap_reclaim",
                 "gap_pct", "rs_vs_sector", "behavior_score", "behavior_signals"):
         assert key in result, f"Missing key: {key}"
+
+
+# ── Breakout freshness ───────────────────────────────────────────────────────
+
+def _make_df_at_dist(dist_pct: float, n: int = 60) -> pd.DataFrame:
+    """Build a DataFrame where the last close is dist_pct% above its own SMA20."""
+    base = 100.0
+    closes = [base] * n
+    df = pd.DataFrame({
+        "open":   [base - 0.3] * n,
+        "high":   [base + 1.0] * n,
+        "low":    [base - 0.8] * n,
+        "close":  closes,
+        "volume": [10_000_000] * n,
+    })
+    sma20 = sum(closes[-20:]) / 20
+    df.iloc[-1, df.columns.get_loc("close")] = sma20 * (1 + dist_pct / 100)
+    return df
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+@patch("scanner.scanner._fetch")
+def test_fresh_breakout_adds_score(mock_fetch, mock_sector):
+    """dist_sma20 0-5% → +1 to technical_score and FRESH label in output."""
+    df = _make_df_at_dist(dist_pct=3.0)
+    info = _make_info(avg_vol=10_000_000, price=float(df["close"].iloc[-1]))
+    df["volume"] = [15_000_000] * len(df)  # vol above MIN_VOLUME_RATIO
+    mock_fetch.return_value = (info, df)
+    result = _score_ticker("AAPL")
+    if result is not None:
+        assert result["breakout_freshness"] == "FRESH"
+        assert any("Fresh" in s for s in result["signals"])
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+@patch("scanner.scanner._fetch")
+def test_extended_breakout_penalises_score(mock_fetch, mock_sector):
+    """dist_sma20 >12% → -1 to technical_score and EXTENDED label in output."""
+    df = _make_df_at_dist(dist_pct=15.0)
+    info = _make_info(avg_vol=10_000_000, price=float(df["close"].iloc[-1]))
+    df["volume"] = [15_000_000] * len(df)
+    mock_fetch.return_value = (info, df)
+    result = _score_ticker("AAPL")
+    if result is not None:
+        assert result["breakout_freshness"] == "EXTENDED"
+        assert any("Extended" in s for s in result["signals"])
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+@patch("scanner.scanner._fetch")
+def test_normal_breakout_no_adjustment(mock_fetch, mock_sector):
+    """dist_sma20 5-12% → NORMAL label, no freshness bonus/penalty."""
+    df = _make_df_at_dist(dist_pct=8.0)
+    info = _make_info(avg_vol=10_000_000, price=float(df["close"].iloc[-1]))
+    df["volume"] = [15_000_000] * len(df)
+    mock_fetch.return_value = (info, df)
+    result = _score_ticker("AAPL")
+    if result is not None:
+        assert result["breakout_freshness"] == "NORMAL"
+        assert not any("Fresh" in s or "Extended" in s for s in result["signals"])
+
+
+@patch("scanner.scanner._fetch_sector_return", return_value=0.01)
+@patch("scanner.scanner._fetch")
+def test_breakout_freshness_field_always_in_output(mock_fetch, mock_sector):
+    """breakout_freshness key must be present in any non-None result."""
+    df = _make_df_at_dist(dist_pct=3.0)
+    info = _make_info(avg_vol=10_000_000, price=float(df["close"].iloc[-1]))
+    df["volume"] = [15_000_000] * len(df)
+    mock_fetch.return_value = (info, df)
+    result = _score_ticker("AAPL")
+    if result is not None:
+        assert "breakout_freshness" in result
+        assert result["breakout_freshness"] in ("FRESH", "NORMAL", "EXTENDED")

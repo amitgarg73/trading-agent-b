@@ -1,10 +1,12 @@
 """
-Market Context — fetches VIX, Fear & Greed, futures bias.
+Market Context — fetches VIX, Fear & Greed, futures bias, sector rotation.
 Same logic as Strategy A (self-contained, no shared import).
 """
 from __future__ import annotations
 import requests
 import yfinance as yf
+
+_SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 
 
 def get() -> dict:
@@ -43,8 +45,30 @@ def get() -> dict:
         context["fear_greed"] = 50
         context["fear_greed_label"] = "Neutral"
 
+    # Sector rotation
+    try:
+        import pandas as pd
+        raw = yf.download(_SECTOR_ETFS, period="2d", interval="1d",
+                          progress=False, group_by="ticker")
+        rotation = {}
+        for etf in _SECTOR_ETFS:
+            try:
+                s = raw[etf]["Close"].dropna() if isinstance(raw.columns, pd.MultiIndex) else raw["Close"].dropna()
+                if len(s) >= 2:
+                    chg = (float(s.iloc[-1]) - float(s.iloc[-2])) / float(s.iloc[-2]) * 100
+                    rotation[etf] = round(chg, 2)
+            except Exception:
+                pass
+        context["sector_rotation"] = dict(sorted(rotation.items(), key=lambda x: x[1], reverse=True))
+    except Exception:
+        context["sector_rotation"] = {}
+
     print(f"[market_context] VIX={context.get('vix_level')} "
           f"F&G={context.get('fear_greed')} bias={context.get('futures_bias')}")
+    if context.get("sector_rotation"):
+        items = list(context["sector_rotation"].items())
+        top = ", ".join(f"{k} {'+' if v >= 0 else ''}{v:.1f}%" for k, v in items[:3])
+        print(f"[market_context] Sector leaders: {top}")
     return context
 
 

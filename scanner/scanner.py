@@ -200,6 +200,15 @@ def _score_ticker(ticker: str, skip_volume_surge: bool = False) -> dict | None:
     price_vs_sma20 = round((cur_price - sma20) / sma20 * 100, 2)
     price_vs_sma50 = round((cur_price - sma50) / sma50 * 100, 2) if sma50 else None
 
+    # Breakout freshness
+    breakout_freshness = "NORMAL"
+    if 0 < price_vs_sma20 <= 5.0:
+        score += 1; signals.append("Fresh SMA20 breakout — continuation setup")
+        breakout_freshness = "FRESH"
+    elif price_vs_sma20 > 12.0:
+        score -= 1; signals.append("Extended >12% above SMA20 — mean-reversion risk")
+        breakout_freshness = "EXTENDED"
+
     # Momentum
     momentum_5d = round((close.iloc[-1] - close.iloc[-6]) / close.iloc[-6] * 100, 2) if len(close) >= 6 else 0
     if momentum_5d > 3:
@@ -225,9 +234,10 @@ def _score_ticker(ticker: str, skip_volume_surge: bool = False) -> dict | None:
         "rsi":            round(float(rsi), 1) if pd.notna(rsi) else None,
         "macd_signal":    macd_signal,
         "bb_signal":      bb_signal,
-        "price_vs_sma20": price_vs_sma20,
-        "price_vs_sma50": price_vs_sma50,
-        "momentum_5d":    momentum_5d,
+        "price_vs_sma20":    price_vs_sma20,
+        "price_vs_sma50":    price_vs_sma50,
+        "breakout_freshness": breakout_freshness,
+        "momentum_5d":       momentum_5d,
         "above_vwap":     behavioral["above_vwap"],
         "vwap_reclaim":   behavioral["vwap_reclaim"],
         "vwap_signal":    behavioral["vwap_signal"],
