@@ -178,3 +178,60 @@ def test_earnings_stocks_not_excluded(mock_pool, mock_earnings):
     mock_pool.return_value = ["AAPL", "MSFT"]
     result = get_pool3_tickers()
     assert len(result) >= 0  # pool filter may still return 0 if vol_ratio too low
+
+
+# ── quality floor tests ───────────────────────────────────────────────────────
+
+def test_quality_floor_excludes_negative_score_stocks():
+    """Stocks scoring ≤ 0 must not enter Pool 3."""
+    negative_metrics = _metrics(
+        ticker="WEAK", vol_ratio=0.3, above_vwap=False, rs=-0.5, ret=-1.0
+    )
+    score = _filter_score(negative_metrics)
+    assert score <= 0, f"Expected negative/zero score, got {score}"
+
+    with patch("scanner.pool_filter.pool_manager.get_pool", return_value=["WEAK"]), \
+         patch("scanner.pool_filter._realtime_metrics", return_value=negative_metrics):
+        result = get_pool3_tickers()
+    assert "WEAK" not in result
+
+
+def test_quality_floor_allows_positive_score_stocks():
+    """Stocks scoring > 0 pass the quality floor."""
+    good_metrics = _metrics(ticker="STRONG", vol_ratio=2.5, above_vwap=True, rs=1.8, ret=1.5)
+    score = _filter_score(good_metrics)
+    assert score > 0, f"Expected positive score, got {score}"
+
+    with patch("scanner.pool_filter.pool_manager.get_pool", return_value=["STRONG"]), \
+         patch("scanner.pool_filter._realtime_metrics", return_value=good_metrics):
+        result = get_pool3_tickers()
+    assert "STRONG" in result
+
+
+@patch("scanner.pool_filter._realtime_metrics")
+@patch("scanner.pool_filter.pool_manager.get_pool")
+def test_get_pool3_returns_empty_when_all_below_floor(mock_pool, mock_metrics):
+    """If every Pool 2 stock has score ≤ 0, Pool 3 is empty — no trades that day."""
+    mock_pool.return_value = ["AAPL", "MSFT", "NVDA"]
+    mock_metrics.side_effect = lambda t: _metrics(
+        ticker=t, vol_ratio=0.2, above_vwap=False, rs=-1.0, ret=-2.0
+    )
+    result = get_pool3_tickers()
+    assert result == []
+
+
+@patch("scanner.pool_filter._realtime_metrics")
+@patch("scanner.pool_filter.pool_manager.get_pool")
+def test_quality_floor_filters_partial_list(mock_pool, mock_metrics):
+    """Mix of positive and negative scores — only positive ones enter Pool 3."""
+    mock_pool.return_value = ["AAPL", "WEAK"]
+
+    def side_effect(ticker):
+        if ticker == "AAPL":
+            return _metrics(ticker="AAPL", vol_ratio=2.0, above_vwap=True, rs=1.5, ret=1.0)
+        return _metrics(ticker="WEAK", vol_ratio=0.2, above_vwap=False, rs=-0.5, ret=-1.0)
+
+    mock_metrics.side_effect = side_effect
+    result = get_pool3_tickers()
+    assert "AAPL" in result
+    assert "WEAK" not in result

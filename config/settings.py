@@ -73,6 +73,7 @@ POOL_DEMOTION_SCORE    = 2.0    # 7-day rolling score to demote Pool 2 → Pool 
 POOL3_SIZE             = 20     # max stocks in Pool 3 each day (expanded from 10)
 POOL3_MIN_VOL_RATIO    = 0.3    # min relative volume for Pool 3 selection
 POOL3_EARNINGS_DAYS    = 2      # exclude stocks with earnings within N days
+POOL3_MIN_FILTER_SCORE = 0.0    # quality floor — stocks with score ≤ this are skipped (negative = declining setup)
 
 # Scoring weights for daily stock scoring
 SCORE_WEIGHT_WIN_LOSS  = 0.40

@@ -20,7 +20,7 @@ import yfinance as yf
 import pandas as pd
 from core import pool_manager
 from config.settings import (
-    POOL3_SIZE, POOL3_MIN_VOL_RATIO, POOL3_EARNINGS_DAYS,
+    POOL3_SIZE, POOL3_MIN_VOL_RATIO, POOL3_EARNINGS_DAYS, POOL3_MIN_FILTER_SCORE,
 )
 from config.blue_chips import SECTOR_MAP, SECTOR_ETF
 
@@ -273,8 +273,12 @@ def get_pool3_tickers() -> list[str]:
             metrics.append(m)
 
     metrics.sort(key=lambda x: x["filter_score"], reverse=True)
-    selected = [m["ticker"] for m in metrics[:POOL3_SIZE]]
+    passing = [m for m in metrics if m["filter_score"] > POOL3_MIN_FILTER_SCORE]
+    selected = [m["ticker"] for m in passing[:POOL3_SIZE]]
 
+    skipped = len(metrics) - len(passing)
+    if skipped:
+        print(f"[pool_filter] {skipped} stock(s) below quality floor (score ≤ {POOL3_MIN_FILTER_SCORE}) — excluded")
     print(f"[pool_filter] Pool 3 today ({len(selected)} stocks): {selected}")
     return selected
 
@@ -294,4 +298,5 @@ def get_pool3_with_context() -> list[dict]:
             metrics.append(m)
 
     metrics.sort(key=lambda x: x["filter_score"], reverse=True)
-    return metrics[:POOL3_SIZE]
+    passing = [m for m in metrics if m["filter_score"] > POOL3_MIN_FILTER_SCORE]
+    return passing[:POOL3_SIZE]
