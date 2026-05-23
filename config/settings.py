@@ -21,7 +21,7 @@ MIN_POSITION_PCT     = 0.05
 MAX_POSITIONS        = 10           # fewer positions — blue chip focus
 MAX_LOSS_PER_TRADE   = 0.0067
 MIN_REWARD_RISK      = 1.4   # intraday 1% target / 0.67% stop = 1.49:1 — set below actual to give margin
-TARGET_PCT           = 0.02
+TARGET_PCT           = 0.025      # 2.5% profit target (+0.5% — paired with native trail)
 MAX_PER_SECTOR       = 2           # tighter sector limit — 25 stock universe
 DAILY_LOSS_PCT       = 0.01       # 1% of capital — daily net loss limit (realized + unrealized)
 DAILY_LOSS_LIMIT     = -(TOTAL_CAPITAL * DAILY_LOSS_PCT)  # -$500 at $50K capital
@@ -30,6 +30,7 @@ DAILY_LOCK_IN_TARGET = 716
 DAILY_BONUS_TARGET   = 1_000
 LOCK_IN_TRAIL_PCT    = 0.005
 TRAIL_PCT            = 0.01
+USE_NATIVE_TRAILING_STOP = True   # bracket order with Alpaca native trail — real-time floor, no polling gap
 PARTIAL_PROFIT_ENABLED = True
 PARTIAL_PROFIT_PCT   = 0.01
 

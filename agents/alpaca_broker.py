@@ -8,12 +8,16 @@ import os
 import time
 from datetime import date, datetime
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrderStatus
+from alpaca.trading.requests import (
+    MarketOrderRequest, LimitOrderRequest, GetOrdersRequest,
+    TakeProfitRequest, StopLossRequest,
+)
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderStatus, QueryOrderStatus, OrderClass
 from core import db
 from config.settings import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY, STRATEGY_TAG,
-    TRAIL_PCT, PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PCT,
+    TRAIL_PCT, USE_NATIVE_TRAILING_STOP,
+    PARTIAL_PROFIT_ENABLED, PARTIAL_PROFIT_PCT,
     DAILY_LOCK_IN_TARGET, DAILY_BONUS_TARGET, LOCK_IN_TRAIL_PCT,
     R_LADDER_ENABLED, VWAP_EXIT_ENABLED,
 )
@@ -139,15 +143,19 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
         pool   = trade.get("pool", 2)
 
         try:
+            target_price = round(float(trade["target_price"]), 2)
             req = MarketOrderRequest(
                 symbol=ticker,
                 qty=shares,
                 side=OrderSide.BUY,
                 time_in_force=TimeInForce.DAY,
+                order_class=OrderClass.BRACKET,
+                take_profit=TakeProfitRequest(limit_price=target_price),
+                stop_loss=StopLossRequest(trail_percent=round(TRAIL_PCT * 100, 4)),
                 client_order_id=_order_id(ticker),
             )
             order = broker.submit_order(req)
-            print(f"[alpaca] BUY {shares} {ticker} @ market (pool {pool}) — order {order.id}")
+            print(f"[alpaca] BUY {shares} {ticker} @ market bracket → target={target_price} trail={TRAIL_PCT*100:.1f}% (pool {pool}) — order {order.id}")
 
             # Verify order filled (not cancelled/rejected) before writing to DB
             fill_price     = None
@@ -215,6 +223,26 @@ def get_open_tickers() -> set:
     return {p.symbol for p in positions}
 
 
+def get_order_fill(order_id: str):
+    """Return (close_price, exit_mechanism) for a completed bracket order."""
+    try:
+        order = _get().get_order_by_id(order_id)
+        legs = order.legs or []
+        for leg in legs:
+            status_str = str(leg.status).lower()
+            type_str   = str(leg.order_type).lower()
+            if "filled" in status_str and leg.filled_avg_price:
+                if "trailing" in type_str:
+                    return float(leg.filled_avg_price), "NATIVE_TRAIL"
+                elif "stop" in type_str:
+                    return float(leg.filled_avg_price), "STOP"
+                else:
+                    return float(leg.filled_avg_price), "TARGET"
+    except Exception as e:
+        print(f"  ⚠️  get_order_fill({order_id}): {e}")
+    return None, None
+
+
 def _reconcile_with_alpaca() -> None:
     """
     Close any b_positions OPEN rows that no longer exist in Alpaca.
@@ -263,7 +291,27 @@ def _reconcile_with_alpaca() -> None:
             print(f"  ⏳ Reconciliation: {pos['ticker']} buy order pending — waiting for fill")
             continue
         if pos["ticker"] in filled_buys:
-            # Entry filled — bracket exited; update_positions_intraday() resolves P&L
+            # Entry filled — bracket leg may have fired. Resolve it here if position is gone.
+            order_id = pos.get("alpaca_order_id")
+            if order_id:
+                close_price, mechanism = get_order_fill(order_id)
+                if close_price:
+                    entry  = float(pos.get("fill_price") or pos["entry_price"])
+                    shares = int(pos["shares"])
+                    pnl    = round(shares * (close_price - entry), 2)
+                    hwm    = float(pos.get("high_watermark") or entry)
+                    lwm    = float(pos.get("low_watermark")  or entry)
+                    db.update("b_positions", {"id": pos["id"]}, {
+                        "status":         "CLOSED",
+                        "close_reason":   mechanism or "BRACKET",
+                        "exit_mechanism": mechanism or "BRACKET",
+                        "close_price":    close_price,
+                        "realized_pnl":   pnl,
+                        "closed_at":      datetime.utcnow().isoformat(),
+                        "mae":            round(max(0.0, (entry - lwm) * shares), 2),
+                        "mfe":            round(max(0.0, (hwm  - entry) * shares), 2),
+                    })
+                    print(f"  ✅ Bracket exit: {pos['ticker']} → {mechanism} @ ${close_price:.2f} P&L=${pnl:+.2f}")
             continue
         # No filled buy and no pending buy — entry truly never executed
         print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")
@@ -362,11 +410,7 @@ def update_positions_intraday() -> dict:
                 close_reason = "VWAP_BREAK"
                 print(f"  📉 VWAP break: {ticker} ${price:.2f} < VWAP ${vwap:.2f} — exiting")
 
-        # Trailing stop — ratchets from high watermark
-        if not close_reason and price <= new_watermark * (1 - TRAIL_PCT):
-            close_reason = "MANUAL_TRAIL"
-
-        # Hard stop
+        # Hard stop — safety net; native trail bracket should fire first
         if not close_reason and price <= stop:
             close_reason = "STOP"
 
@@ -411,6 +455,16 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
     shares  = int(pos["shares"])
     entry   = float(pos["fill_price"] or pos["entry_price"])  # use actual fill price for P&L
     pnl     = round(shares * (price - entry), 2)
+
+    # Cancel open bracket legs before submitting manual close —
+    # stop/take-profit legs conflict with the market sell order.
+    order_id = pos.get("alpaca_order_id")
+    if order_id:
+        try:
+            _get().cancel_order_by_id(order_id)
+            time.sleep(0.3)
+        except Exception:
+            pass  # already closed/cancelled — safe to proceed
 
     high_wm = float(pos.get("high_watermark") or entry)
     low_wm  = float(pos.get("low_watermark")  or entry)
