@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v1.2 · **Updated:** 2026-05-22
+**Version:** v1.3 · **Updated:** 2026-05-23
 
 ---
 
@@ -110,11 +110,16 @@ Selected fresh each morning by Pool Filter from Pool 2. These are the only stock
 **Selection signals (Pool Filter scores each Pool 2 stock):**
 - `vwap_position`: Is price above VWAP at market open? (high weight)
 - `orb_breakout`: Did price break above Opening Range (9:30–9:45 AM high)?
-- `volume_ratio`: Current volume vs 20-day average (surge = bullish confirmation)
-- `sector_rs`: Sector relative strength vs SPY for the day
+- `volume_ratio`: Current volume vs 20-day average (surge = bullish confirmation) — uses 30-day history so `tail(20)` is a genuine 20-day average
+- `sector_rs`: Sector relative strength vs SPY for the day — only computed when sector move is >0.3% to avoid flat-day noise amplification
 - `volume_acceleration`: Rate of volume build in first 30 minutes
+- `market_rs`: Relative strength vs SPY directly (in addition to sector RS)
 
-Top 8–10 scores become Pool 3 for the day. These candidates are passed to the Scanner for behavioral scoring, then to Claude with full per-stock context.
+**Quality floor:** Before selecting top N, tickers must pass `filter_score > POOL3_MIN_FILTER_SCORE` (default 0.0). This removes stocks with net-negative signals even if they rank in the top 8–10 by relative score on a weak day.
+
+**Pool 2 seed demotion:** Stocks in the `POOL_2_SEED` config can now be demoted if their `rolling_score` falls below the demotion threshold. Previously seed stocks were immune to demotion, which allowed underperformers to persist indefinitely.
+
+Top 8–10 passing stocks become Pool 3 for the day. These candidates are passed to the Scanner for behavioral scoring, then to Claude with full per-stock context.
 
 ---
 
@@ -124,9 +129,9 @@ Top 8–10 scores become Pool 3 for the day. These candidates are passed to the 
 |-------|------|--------|---------|----------------|
 | **Pool Manager** | `core/pool_manager.py` | `POOL_2_SEED` config, `b_pools` table | Updated `b_pools` | Maintains Pool 1/2/3 membership in Supabase. Seeds pools from config if empty. Called at startup. |
 | **Pool Filter** | `scanner/pool_filter.py` | Pool 2 stocks from `b_pools`, real-time Alpaca/yfinance data | Pool 3 candidate list (8–10 stocks) with VWAP/ORB/volume/sector scores | Each morning: fetches live data for all Pool 2 stocks, scores on 5 signals, returns top picks as Pool 3 daily elite. |
-| **Scanner** | `scanner/scanner.py` | Pool 3 candidates | Scored candidate list with RSI, MACD, BB, volume, VWAP respect, ATR ratio | Behavioral scoring: VWAP respect, ATR range alignment, volume patterns, RSI, MACD, SMA. Returns scored candidates with `behavioral_score`. |
+| **Scanner** | `scanner/scanner.py` | Pool 3 candidates | Scored candidate list with RSI, MACD, BB, volume, VWAP respect, ATR ratio, breakout freshness | Behavioral scoring: VWAP respect, ATR range alignment, volume patterns, RSI, MACD, SMA. Breakout freshness: +1 score if price 0–5% above SMA20 (FRESH), −1 if >12% above (EXTENDED). RS flat-day guard: sector return must be >0.3% for RS signal to fire. |
 | **News Intel** | `agents/news_intel.py` | Scored candidates | Filtered candidates + news context | Earnings blackout filter. Removes earnings-day tickers. Adds news sentiment context to surviving candidates. |
-| **Market Context** | `agents/market_context.py` | VIX, Fear & Greed API, futures data | `market_context` dict with flags | VIX thresholds, Fear & Greed, US futures gate (<−1.5% skips day). Sets `max_positions` and `quiet_day` flag for strategy prompt. |
+| **Market Context** | `agents/market_context.py` | VIX, Fear & Greed API, yfinance data | `market_context` dict with flags and sector rotation | VIX thresholds, Fear & Greed, SPY futures bias, economic calendar. Sector rotation: 11 sector ETFs (XLK–XLU) ranked by today's return; top leaders and laggards included in Claude's market summary. |
 | **Strategy Agent** | `agents/strategy.py` | Enriched candidates, market context, per-stock behavioral data | Trade plan (ticker, entry, target, stop, confidence, reasoning) | Claude claude-opus-4-7. Receives `pool`, `rolling_score`, `above_vwap`, `rs_vs_sector`, `atr_ratio`, `signal_type` per stock. Applies time-of-day rules. INTRADAY_MOMENTUM candidates bypass 1pm pool restriction. Prompt cached. |
 | **Risk Agent** | `agents/risk.py` | Trade plan | Validated/rejected trades | Validates R:R ≥ 2.0, position size within bounds (`$2,500–$3,500`), stop not too wide, max loss per trade check. |
 | **Sector Guard** | `agents/sector_guard.py` | Validated trades, current positions | Filtered trades | Sector concentration cap. Uses `SECTOR_MAP` + yfinance fallback. |
@@ -149,7 +154,7 @@ Runs once before significant intraday volume develops. Pool Filter runs first to
 | **1. Pool Filter** | Pool Filter | Fetches real-time data for all Pool 2 stocks. Scores on VWAP position, ORB breakout, volume ratio, sector RS, volume acceleration. Returns top 8–10 as Pool 3. |
 | **2. Behavioral Scan** | Scanner | Scores Pool 3 stocks: VWAP respect, ATR alignment, volume patterns, RSI, MACD, SMA20/50. Returns `behavioral_score` per stock. |
 | **3. News Filter** | News Intel | Removes earnings-day tickers. Adds news sentiment context to market summary. |
-| **4. Market Context** | Market Context | Fetches VIX, Fear & Greed, US futures, economic calendar. Sets `max_positions` and `quiet_day`. Hard skip if futures < −1.5%. |
+| **4. Market Context** | Market Context | Fetches VIX, Fear & Greed, US futures, economic calendar, and sector rotation (11 ETFs). Sets `max_positions` and `quiet_day`. Hard skip if futures < −1.5%. |
 | **5. Strategy (Claude)** | Strategy Agent | claude-opus-4-7 receives Pool 3 candidates with full behavioral context. Selects trades, assigns confidence, sets entry/target/stop using fixed formulas. Writes reasoning. |
 | **6. Risk Validation** | Risk Agent | Enforces R:R ≥ 2.0, position size bounds, max loss per trade. |
 | **7. Sector Guard** | Sector Guard | Caps exposure at sector concentration limit. |
@@ -475,7 +480,8 @@ The Pool Filter itself is a risk layer — only stocks with proven behavioral tr
 | `MIN_INTRADAY_INTERVAL_MIN` | 90 | Min minutes between momentum scans |
 | `SPY_MOMENTUM_GATE` | +0.5% | SPY min gain to allow momentum scan |
 | `POOL_PROMOTE_THRESHOLD` | 6.0 | 7-day rolling score to promote to Pool 2 |
-| `POOL_DEMOTE_THRESHOLD` | 3.0 | 7-day rolling score to demote from Pool 2 |
+| `POOL_DEMOTE_THRESHOLD` | 3.0 | 7-day rolling score to demote from Pool 2 (applies to seed stocks too) |
+| `POOL3_MIN_FILTER_SCORE` | 0.0 | Quality floor: Pool Filter rejects tickers with net-negative composite score |
 | `HIGH_CONFIDENCE_SIZE` | $3,500 | HIGH confidence position size |
 | `MEDIUM_CONFIDENCE_SIZE` | $3,000 | MEDIUM confidence position size |
 | `LOW_CONFIDENCE_SIZE` | $2,500 | LOW confidence position size |
@@ -625,6 +631,31 @@ notes           text
 ---
 
 ## 12. Change Log
+
+### v1.3 — 2026-05-23
+
+**Stock selection improvements — P0/P1/P2 quality sweep**
+
+**Scanner — breakout freshness scoring**
+- `scanner/scanner.py`: Added breakout freshness classification to `_score_ticker()`. Price 0–5% above SMA20 → `FRESH` (+1 score, high continuation odds). Price >12% above SMA20 → `EXTENDED` (-1 score, mean-reversion risk). 5–12% or below SMA20 → `NORMAL`. Field `breakout_freshness` now included in all candidate dicts.
+
+**Scanner — RS flat-day guard**
+- `scanner/scanner.py`: RS vs sector ETF only fires when sector return is >0.3% (was 0.1%). Flat sector days were producing extreme RS ratios (e.g., stock up 0.4% / sector up 0.05% = RS of 8x) that were meaningless noise. Raised threshold prevents false strong-RS signals on quiet days.
+
+**Pool Filter — vol ratio bug fix**
+- `scanner/pool_filter.py`: `_realtime_metrics()` changed `period="5d"` → `period="30d"`. With only 5 days of data, `tail(20)` was averaging only 5 rows — the 20-day average was actually a 5-day average. Now uses a proper 20-day baseline.
+
+**Pool Filter — RS flat-day guard**
+- `scanner/pool_filter.py`: Same fix as scanner — both `sector_return` and `spy_return` thresholds raised from 0.05% to 0.3% to suppress noise on flat days.
+
+**Pool Filter — quality floor**
+- `scanner/pool_filter.py`: Added `POOL3_MIN_FILTER_SCORE` gate. Before selecting top N, all tickers must pass `filter_score > POOL3_MIN_FILTER_SCORE` (default 0.0). Prevents net-negative-signal stocks from entering Pool 3 just because they rank highest on a weak day.
+
+**Pool Manager — seed stock demotion immunity removed**
+- `core/pool_manager.py`: Removed `ticker not in POOL_2_SEED` guard from the Pool 2 demotion condition. Previously seed stocks were immune to demotion — underperformers in the seed list persisted in Pool 2 indefinitely. Now all Pool 2 stocks, including seeds, are demoted when `rolling_score ≤ POOL_DEMOTION_SCORE`.
+
+**Market Context — sector rotation**
+- `agents/market_context.py`: Added sector rotation to `get()`. Fetches 2-day returns for 11 sector ETFs (XLK, XLF, XLE, XLV, XLI, XLC, XLY, XLP, XLB, XLRE, XLU), sorts best→worst, and includes leading/lagging sectors in Claude's market summary. Gives Claude directional context about which sectors have intraday momentum.
 
 ### v1.2 — 2026-05-22
 
