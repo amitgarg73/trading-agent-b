@@ -29,6 +29,23 @@ def check_alpaca() -> bool:
         return False
 
 
+def check_stale_positions() -> bool:
+    try:
+        from datetime import date
+        open_pos = db.select("b_positions", filters={"status": "OPEN"})
+        today = date.today().isoformat()
+        stale = [p for p in open_pos if not (p.get("opened_at") or "").startswith(today)]
+        if stale:
+            tickers = ", ".join(p["ticker"] for p in stale)
+            print(f"❌ Stale positions: {tickers} — bracket may not have reconciled. Check Alpaca manually.")
+            return False
+        print(f"✅ Positions: no stale open positions ({len(open_pos)} open today)")
+        return True
+    except Exception as e:
+        print(f"❌ Stale position check: {e}")
+        return False
+
+
 def check_pool_seeded() -> bool:
     try:
         pool2 = db.select("b_pools", filters={"pool": 2})
@@ -44,7 +61,7 @@ def check_pool_seeded() -> bool:
 
 
 if __name__ == "__main__":
-    results = [check_supabase(), check_alpaca(), check_pool_seeded()]
+    results = [check_supabase(), check_alpaca(), check_stale_positions(), check_pool_seeded()]
     if all(results):
         print("\n✅ Strategy B: all systems healthy")
         sys.exit(0)

@@ -312,6 +312,8 @@ def _reconcile_with_alpaca() -> None:
                         "mfe":            round(max(0.0, (hwm  - entry) * shares), 2),
                     })
                     print(f"  ✅ Bracket exit: {pos['ticker']} → {mechanism} @ ${close_price:.2f} P&L=${pnl:+.2f}")
+                else:
+                    print(f"  ⚠️  NATIVE_TRAIL: {pos['ticker']} gone from Alpaca but get_order_fill returned no price — position stays OPEN, will retry next cycle")
             continue
         # No filled buy and no pending buy — entry truly never executed
         print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")
@@ -463,8 +465,8 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
         try:
             _get().cancel_order_by_id(order_id)
             time.sleep(0.3)
-        except Exception:
-            pass  # already closed/cancelled — safe to proceed
+        except Exception as e:
+            print(f"  ⚠️  {ticker}: bracket cancel failed ({e}) — proceeding with market close anyway")
 
     high_wm = float(pos.get("high_watermark") or entry)
     low_wm  = float(pos.get("low_watermark")  or entry)
