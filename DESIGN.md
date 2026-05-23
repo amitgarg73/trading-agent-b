@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v1.4 · **Updated:** 2026-05-23
+**Version:** v1.5 · **Updated:** 2026-05-23
 
 ---
 
@@ -135,7 +135,8 @@ Top 8–10 passing stocks become Pool 3 for the day. These candidates are passed
 | **Strategy Agent** | `agents/strategy.py` | Enriched candidates, market context, per-stock behavioral data | Trade plan (ticker, entry, target, stop, confidence, reasoning) | Claude claude-opus-4-7. Receives `pool`, `rolling_score`, `above_vwap`, `rs_vs_sector`, `atr_ratio`, `signal_type` per stock. Applies time-of-day rules. INTRADAY_MOMENTUM candidates bypass 1pm pool restriction. Prompt cached. |
 | **Risk Agent** | `agents/risk.py` | Trade plan | Validated/rejected trades | Validates R:R ≥ 2.0, position size within bounds (`$2,500–$3,500`), stop not too wide, max loss per trade check. |
 | **Sector Guard** | `agents/sector_guard.py` | Validated trades, current positions | Filtered trades | Sector concentration cap. Uses `SECTOR_MAP` + yfinance fallback. |
-| **Guardrails** | `agents/guardrails.py` | Trade list, daily P&L state | Final approved trades | Safety checks: no duplicates, price sanity (>5% from market = reject), daily loss limit, capital cap. |
+| **ATR Sizer** | `agents/atr_sizer.py` | Sector-guard-approved trades, scanner ATR map | ATR-adjusted trades or dropped list | P0-1: stop = max(ATR × 1.2, 0.5%); shares from constant $150 risk, capped at confidence limit. P0-2: ORB gate — if first-30-min range < 0.5 × ATR, halve shares. Drops trades where ATR stop ≥ target (R:R < 1). |
+| **Guardrails** | `agents/guardrails.py` | Trade list, daily P&L state | Final approved trades | Safety checks: no duplicates, price sanity (>5% from market = reject), daily loss limit, capital cap. Accepts ATR-based stops via `atr_stop_pct` field; verifies stop matches ATR formula rather than fixed 0.67% formula. |
 | **Pool Scorer** | `agents/pool_scorer.py` | Today's Pool 3 trades from `b_positions`, `b_planned_trades` | Updated `b_stock_scores`, updated `b_pools` | EOD: scores each Pool 3 stock on win/loss, P&L, slippage, setup alignment. Computes 7-day rolling score. Promotes stocks with `rolling_score ≥ 6`; demotes stocks with `rolling_score < 3`. |
 | **Intraday Momentum Scanner** | `scanner/intraday_momentum.py` | Pool 3 stocks, SPY snapshot, Alpaca live prices | Momentum candidates with `pool=2` and `signal_type=INTRADAY_MOMENTUM` | SPY gate (≥+0.5%). Scans Pool 3 for stocks up ≥0.5% above VWAP. Max 6 runs/day, min 90 min between runs. Returns candidates with `pool` field for time-of-day classification. |
 | **Alpaca Broker** | `agents/alpaca_broker.py` | Validated trades | Bracket order confirmations, live prices, snapshots | Alpaca API wrapper. Bracket orders tagged `strategy=b`. `get_orders`, place bracket orders, get snapshots, live prices. |
@@ -158,7 +159,8 @@ Runs once before significant intraday volume develops. Pool Filter runs first to
 | **5. Strategy (Claude)** | Strategy Agent | claude-opus-4-7 receives Pool 3 candidates with full behavioral context. Selects trades, assigns confidence, sets entry/target/stop using fixed formulas. Writes reasoning. |
 | **6. Risk Validation** | Risk Agent | Enforces R:R ≥ 2.0, position size bounds, max loss per trade. |
 | **7. Sector Guard** | Sector Guard | Caps exposure at sector concentration limit. |
-| **8. Guardrails** | Guardrails | Blocks duplicates, price sanity check, daily loss limit. |
+| **7.5 ATR Sizer (P0)** | ATR Sizer | Replaces formula stop with ATR-based stop (`max(ATR × 1.2, 0.5%)`). Shares from $150 constant risk. ORB gate: halves shares on choppy opens. Drops trades where stop ≥ target. |
+| **8. Guardrails** | Guardrails | Blocks duplicates, price sanity check, daily loss limit. Accepts `atr_stop_pct` field for wide-stop validation. |
 | **9. Execute** | Alpaca Broker | Places bracket orders tagged `strategy=b`. Records positions in `b_positions`. |
 
 ### 5.2 Intraday — Every 30 min, 10:00 AM–3:45 PM ET
@@ -384,11 +386,14 @@ Confidence is assigned by Claude based on behavioral context, VWAP position, and
 entry_price    = Alpaca ask price (live) or scanner close
 target_price   = round(entry × 1.04, 2)     # +4% ceiling — limit order on Leg B
 partial_target = round(entry × 1.01, 2)     # +1% partial exit (Leg A)
-stop_loss      = round(entry × 0.9933, 2)   # −0.67% stop
-shares         = int(position_size / entry)
 
-Reward:Risk (ceiling)    = 4.00% / 0.67% = 6.0:1
-Reward:Risk (intraday)   = 1.00% / 0.67% = 1.49 ≈ 1.5:1
+# ATR-based stop (P0) — applied by atr_sizer.py after sector guard:
+stop_pct    = max(atr_pct × 1.2, 0.5%)     # outside the noise band; floor 0.5%
+stop_loss   = round(entry × (1 − stop_pct), 2)
+shares      = min(int($150 / (entry × stop_pct)), int(position_size_cap / entry))
+
+Reward:Risk (ceiling)    = 4.00% / stop_pct (varies; typically 1.5:1–6.0:1)
+Reward:Risk (intraday)   = 1.00% / stop_pct
 ```
 
 **Ceiling vs trail:** Native trailing stop (1% from peak) handles most exits between +0.5% and +3.9%. The 4% ceiling limit order only fires on straight-line momentum runs with no 1% pullback — the days you want maximum capture. Raised from 2.5% to avoid prematurely capping strong momentum days.
@@ -441,6 +446,7 @@ Five independent layers applied in sequence — any one can block a trade:
 | **News Filter** | News Intel | Earnings-day tickers, negative catalyst stocks |
 | **Risk Agent** | risk.py | R:R below 2.0 floor, position size out of bounds, stop too wide |
 | **Sector Guard** | sector_guard.py | Sector concentration breaches |
+| **ATR Sizer** | atr_sizer.py | Drops trades where ATR stop ≥ target; halves shares on choppy opens (ORB < 0.5 × ATR) |
 | **Guardrails** | guardrails.py | Duplicates, price sanity (>5% from market), daily loss limit, max positions |
 
 ### 8.1 Intraday Momentum Guards
@@ -469,7 +475,11 @@ The Pool Filter itself is a risk layer — only stocks with proven behavioral tr
 | `TARGET_PCT` | 4.0% | Ceiling limit order on Leg B — trail exits earlier in most trades |
 | `INTRADAY_TARGET_PCT` | 1.0% | Intraday entry profit target |
 | `PARTIAL_PROFIT_PCT` | 1.0% | Partial exit (Leg A) |
-| `MAX_LOSS_PER_TRADE` | 0.67% | Stop loss depth |
+| `MAX_LOSS_PER_TRADE` | 0.67% | Formula stop (Claude prompt reference; overridden by ATR sizer at runtime) |
+| `ATR_STOP_MULTIPLIER` | 1.2 | ATR-based stop multiplier: stop = max(ATR × 1.2, 0.5%) |
+| `ATR_STOP_FLOOR` | 0.5% | Minimum stop regardless of ATR |
+| `MAX_LOSS_DOLLARS` | $150 | Constant dollar risk per trade |
+| `ORB_ATR_FLOOR` | 0.5 | ORB/ATR ratio below which open is choppy → halve shares |
 | `MIN_REWARD_RISK` | 2.0 | R:R floor (both premarket and intraday) |
 | `TRAIL_PCT` | 1.0% | Trailing stop from high watermark |
 | `LOCK_IN_TRAIL_PCT` | 0.5% | Tighter trail after Tier 1 |
@@ -632,6 +642,18 @@ notes           text
 ---
 
 ## 12. Change Log
+
+### v1.5 — 2026-05-23
+
+**P0: ATR-based stop sizing and ORB choppiness gate**
+
+Root cause addressed: fixed 0.67% stop was inside the intraday noise band for most stocks (IONQ ATR 8.39% vs 0.67% stop = 0.08× ratio). Of 27 stop exits analysed, 3 with ATR data confirmed 100% noise stops.
+
+- `agents/atr_sizer.py` (new): `apply()` runs between sector guard and guardrails. For each trade, looks up `atr_pct` from scanner candidates. Computes `stop_pct = max(atr_pct × 1.2, 0.5%)`. Shares = min($150/risk, position_cap/entry) — constant dollar risk regardless of stop width. ORB gate: fetches first-30-min opening range via yfinance; if ORB < 0.5 × ATR, the open was directionless → halve shares. Trades where stop_pct ≥ target_pct (R:R < 1) are dropped.
+- `agents/guardrails.py`: `_validate()` updated to accept `atr_stop_pct` field. When present, verifies stop matches ATR formula (not fixed 0.67% formula). Fixed formula check unchanged for trades without the field.
+- `orchestrator.py`: step 5.7 calls `atr_sizer.apply()` after sector guard (premarket). Intraday path also calls it; momentum scan candidates carry no ATR, so all pass through unchanged.
+- `config/settings.py`: `ATR_STOP_MULTIPLIER = 1.2`, `ATR_STOP_FLOOR = 0.005`, `MAX_LOSS_DOLLARS = 150`, `ORB_ATR_FLOOR = 0.5` added.
+- Tests: 17 new tests in `tests/test_atr_sizer.py` + 3 new guardrails ATR tests; 181 tests passing.
 
 ### v1.4 — 2026-05-23
 
