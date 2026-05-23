@@ -129,9 +129,16 @@ def _validate(trade: dict, already_traded: set[str],
             abs(target - expected_intraday) / expected_intraday > 0.02):
         return f"target {target} deviates from formula {expected_premarket} (premarket) or {expected_intraday} (intraday)"
 
-    expected_stop = round(entry * (1 - MAX_LOSS_PER_TRADE), 2)
-    if abs(stop - expected_stop) / expected_stop > 0.02:
-        return f"stop {stop} deviates from formula {expected_stop}"
+    # Stop validation — accept ATR-based stop (P0) or fixed-formula stop
+    if trade.get("atr_stop_pct"):
+        atr_stop_pct   = float(trade["atr_stop_pct"])
+        expected_atr_s = round(entry * (1 - atr_stop_pct), 2)
+        if abs(stop - expected_atr_s) > 0.02:
+            return f"stop {stop} deviates from ATR formula {expected_atr_s} (atr_stop_pct={atr_stop_pct:.4f})"
+    else:
+        expected_stop = round(entry * (1 - MAX_LOSS_PER_TRADE), 2)
+        if abs(stop - expected_stop) / expected_stop > 0.02:
+            return f"stop {stop} deviates from formula {expected_stop}"
 
     # R:R
     profit = shares * (target - entry)

@@ -20,6 +20,10 @@ MAX_POSITION_PCT     = 0.07
 MIN_POSITION_PCT     = 0.05
 MAX_POSITIONS        = 10           # fewer positions — blue chip focus
 MAX_LOSS_PER_TRADE   = 0.0067
+ATR_STOP_MULTIPLIER  = 1.2        # P0: stop = max(atr_pct × 1.2, ATR_STOP_FLOOR)
+ATR_STOP_FLOOR       = 0.005      # P0: minimum 0.5% stop — never tighter than this
+MAX_LOSS_DOLLARS     = 150        # P0: constant dollar risk per trade ($150)
+ORB_ATR_FLOOR        = 0.5        # P0: ORB/ATR ratio below this → choppy open → halve shares
 MIN_REWARD_RISK      = 1.4   # intraday 1% target / 0.67% stop = 1.49:1 — set below actual to give margin
 TARGET_PCT           = 0.04       # 4% ceiling — trail does the actual exit; ceiling only fires on straight-line rockets
 MAX_PER_SECTOR       = 2           # tighter sector limit — 25 stock universe

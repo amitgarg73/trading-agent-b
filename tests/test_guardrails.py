@@ -155,3 +155,60 @@ def test_intraday_capped_trade_passes(mock_price, mock_bp, mock_traded):
     passed, rejected = check([trade])
     assert len(passed) == 1, f"Intraday trade blocked: {rejected}"
     assert len(rejected) == 0
+
+
+# ── ATR-based stop tests (P0) ─────────────────────────────────────────────────
+
+@patch("agents.guardrails._traded_today", return_value=set())
+@patch("agents.guardrails._get_buying_power", return_value=50_000.0)
+@patch("agents.guardrails._current_price", return_value=100.00)
+def test_atr_stop_accepted(mock_price, mock_bp, mock_traded):
+    """Trade with atr_stop_pct field should pass stop formula check even if wider than MAX_LOSS_PER_TRADE."""
+    entry     = 100.00
+    stop_pct  = 0.018          # 1.8% stop — wider than 0.67% formula
+    stop      = round(entry * (1 - stop_pct), 2)
+    target    = round(entry * (1 + 0.04), 2)
+    shares    = 10
+    profit    = round(shares * (target - entry), 2)
+    loss      = round(shares * (entry - stop), 2)
+    trade = _make_trade(
+        stop_loss=stop,
+        target_price=target,
+        shares=shares,
+        estimated_profit=profit,
+        max_loss=loss,
+        reward_risk=round(profit / loss, 2),
+        atr_stop_pct=stop_pct,
+    )
+    passed, rejected = check([trade])
+    assert len(passed) == 1, f"ATR-stopped trade blocked: {rejected}"
+
+
+@patch("agents.guardrails._traded_today", return_value=set())
+@patch("agents.guardrails._get_buying_power", return_value=50_000.0)
+@patch("agents.guardrails._current_price", return_value=100.00)
+def test_atr_stop_wrong_value_rejected(mock_price, mock_bp, mock_traded):
+    """atr_stop_pct present but stop_loss doesn't match — rejected."""
+    entry    = 100.00
+    stop_pct = 0.018
+    # Deliberately wrong stop (doesn't match atr_stop_pct)
+    trade = _make_trade(
+        stop_loss=98.00,    # should be 98.20
+        target_price=round(entry * 1.04, 2),
+        atr_stop_pct=stop_pct,
+    )
+    passed, rejected = check([trade])
+    assert len(passed) == 0
+    assert any("atr" in r.lower() for r in rejected)
+
+
+@patch("agents.guardrails._traded_today", return_value=set())
+@patch("agents.guardrails._get_buying_power", return_value=50_000.0)
+@patch("agents.guardrails._current_price", return_value=100.00)
+def test_no_atr_stop_pct_uses_formula(mock_price, mock_bp, mock_traded):
+    """Trade without atr_stop_pct still uses fixed-formula check."""
+    entry = 100.00
+    trade = _make_trade(stop_loss=96.00)   # too wide for formula (0.67%)
+    passed, rejected = check([trade])
+    assert len(passed) == 0
+    assert any("stop" in r.lower() for r in rejected)

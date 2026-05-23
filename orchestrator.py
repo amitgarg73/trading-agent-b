@@ -207,6 +207,11 @@ def _maybe_run_intraday_scan(broker: str) -> None:
             _save_intraday_scan(today, now_utc, {"candidates": len(candidates), "rejected": len(trades)})
             return
 
+        # ATR sizing — intraday momentum candidates don't carry atr_pct, so all pass through
+        from agents import atr_sizer
+        intraday_atr = {c["ticker"]: c.get("atr_pct") for c in candidates}
+        approved, _ = atr_sizer.apply(approved, intraday_atr)
+
         final, _guard_rejected = guardrails.check(approved, broker=broker)
         if not final:
             _save_intraday_scan(today, now_utc, {"candidates": len(candidates), "guard_rejected": len(approved)})
@@ -348,6 +353,17 @@ def premarket(broker: str = "alpaca") -> None:
         approved  = sg_result["approved_trades"]
         if sg_result.get("sector_blocked"):
             print(f"    Sector guard blocked: {[b['ticker'] for b in sg_result['sector_blocked']]}")
+
+    # 5.7 ATR sizing (P0) — replace formula stop with ATR-based stop + constant $150 risk
+    atr_dropped: list[str] = []
+    if approved:
+        from agents import atr_sizer
+        candidates_atr = {c["ticker"]: c.get("atr_pct") for c in candidates}
+        approved, atr_dropped = atr_sizer.apply(approved, candidates_atr)
+        if atr_dropped:
+            print(f"    ATR sizer dropped: {atr_dropped}")
+        else:
+            print(f"    ATR sizer applied to {len(approved)} trade(s)")
 
     # 6. Guardrails
     print("\n[6] Guardrails check...")
