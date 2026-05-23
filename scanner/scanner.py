@@ -114,7 +114,7 @@ def _behavioral_score(ticker: str, df: pd.DataFrame, info: dict) -> dict:
     sector_return = _fetch_sector_return(ticker)
     stock_return  = float((close.iloc[-1] - close.iloc[-2]) / close.iloc[-2]) if len(close) >= 2 else 0
     rs_vs_sector  = None
-    if sector_return is not None and abs(sector_return) > 0.001:
+    if sector_return is not None and abs(sector_return) > 0.003:
         rs_vs_sector = round(stock_return / abs(sector_return), 2)
         if rs_vs_sector > 1.5:
             score += 2; signals.append(f"Strong sector RS ({rs_vs_sector:.1f}x)")

@@ -161,7 +161,7 @@ def _realtime_metrics(ticker: str) -> dict | None:
             if len(edf) >= 2:
                 edf.columns = [c.lower() for c in edf.columns]
                 etf_return = (float(edf["close"].iloc[-1]) - float(edf["close"].iloc[-2])) / float(edf["close"].iloc[-2])
-                if abs(etf_return) > 0.0005:
+                if abs(etf_return) > 0.003:
                     rs_vs_sector = round(stock_return / abs(etf_return), 2)
         except Exception:
             pass
@@ -169,7 +169,7 @@ def _realtime_metrics(ticker: str) -> dict | None:
         # Market-relative strength vs SPY
         spy_ret      = _spy_return()
         rs_vs_market = None
-        if spy_ret is not None and abs(spy_ret) > 0.0005:
+        if spy_ret is not None and abs(spy_ret) > 0.003:
             rs_vs_market = round(stock_return / abs(spy_ret), 2)
 
         result = {
