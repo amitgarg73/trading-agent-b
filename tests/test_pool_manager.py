@@ -38,12 +38,12 @@ def test_demotion_pool2_to_pool1(mock_update):
 
 
 @patch("core.pool_manager.db.update")
-def test_seed_stocks_never_demoted(mock_update):
-    # Pick any seed stock and try to demote it
+def test_seed_stocks_can_be_demoted(mock_update):
+    # Seed stocks are no longer immune — persistent losers get demoted like any Pool 2 stock
     seed_ticker = POOL_2_SEED[0]
-    scored = [{"ticker": seed_ticker, "pool": 2, "rolling_7d": 0.0}]
+    scored = [{"ticker": seed_ticker, "pool": 2, "rolling_7d": POOL_DEMOTION_SCORE - 1}]
     result = apply_promotions_demotions(scored)
-    assert seed_ticker not in result["demoted"]
+    assert seed_ticker in result["demoted"]
 
 
 @patch("core.pool_manager.db.select")

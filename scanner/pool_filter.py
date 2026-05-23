@@ -132,7 +132,7 @@ def _realtime_metrics(ticker: str) -> dict | None:
     """Fetch daily + intraday metrics for a single ticker."""
     try:
         t  = yf.Ticker(ticker)
-        df = t.history(period="5d", interval="1d")
+        df = t.history(period="30d", interval="1d")
         if df is None or len(df) < 2:
             return None
         df.columns = [c.lower() for c in df.columns]

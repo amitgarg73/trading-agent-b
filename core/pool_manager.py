@@ -73,7 +73,7 @@ def apply_promotions_demotions(scored_stocks: list[dict]) -> dict:
             })
             promoted.append(ticker)
 
-        elif pool == 2 and ticker not in POOL_2_SEED and score <= POOL_DEMOTION_SCORE:
+        elif pool == 2 and score <= POOL_DEMOTION_SCORE:
             db.update("b_pools", {"ticker": ticker}, {
                 "pool": 1,
                 "promoted_from": 2,
