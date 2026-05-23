@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v1.5 · **Updated:** 2026-05-23
+**Version:** v1.6 · **Updated:** 2026-05-23
 
 ---
 
@@ -642,6 +642,16 @@ notes           text
 ---
 
 ## 12. Change Log
+
+### v1.6 — 2026-05-23
+
+**P1: datetime reconcile fix, friction breakdown, ATR quality gate**
+
+- `agents/alpaca_broker.py` `_reconcile_with_alpaca`: wrapped `(o.filled_at or o.submitted_at or "")` with `str()` — `filled_at` is a `datetime` object; the missing `str()` raised `AttributeError`, silently caught, leaving `filled_buys = set()` and causing all positions to be marked UNFILLED.
+- `agents/pool_scorer.py` `write_daily_performance`: added `friction_breakdown` dict (total_entry_slippage_bps, avg_slippage_bps, fills_with_data) to the `pool=None` total row, computed from fill_price vs entry_price on today's closed positions.
+- `scanner/scanner.py` `_score_ticker`: computes `atr_pct` from absolute ATR / price and exposes it in candidate output (needed by ATR sizer). Adds ATR quality gate: `MAX_ATR_PCT=3.0` — skips stocks with ATR% >3 before they reach Claude (stricter than Strategy A because blue chip universe should not have ATR >3%).
+- `config/settings.py`: `MAX_ATR_PCT = 3.0` added.
+- Tests: 182 passing (+1 new: datetime reconcile fix regression test).
 
 ### v1.5 — 2026-05-23
 
