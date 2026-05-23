@@ -270,14 +270,14 @@ def _reconcile_with_alpaca() -> None:
             for o in all_orders
             if str(o.side) == "buy"
             and str(o.status) == "filled"
-            and (o.filled_at or o.submitted_at or "").startswith(today[:10])
+            and str(o.filled_at or o.submitted_at or "").startswith(today[:10])
         }
         pending_buys = {
             str(o.symbol)
             for o in all_orders
             if str(o.side) == "buy"
             and str(o.status) in ("pending_new", "accepted", "new", "held", "partially_filled")
-            and (o.submitted_at or "").startswith(today[:10])
+            and str(o.submitted_at or "").startswith(today[:10])
         }
     except Exception as e:
         print(f"  ⚠️  Reconciliation: order fetch failed — {e}")

@@ -19,7 +19,7 @@ import pandas as pd
 import ta
 from config.settings import (
     RSI_OVERSOLD, RSI_OVERBOUGHT, MIN_VOLUME_RATIO,
-    MIN_PRICE, MIN_AVG_VOLUME, SCORE_THRESHOLD,
+    MIN_PRICE, MIN_AVG_VOLUME, SCORE_THRESHOLD, MAX_ATR_PCT,
 )
 from config.blue_chips import SECTOR_MAP, SECTOR_ETF
 
@@ -223,6 +223,12 @@ def _score_ticker(ticker: str, skip_volume_surge: bool = False) -> dict | None:
     if abs(total_score) < SCORE_THRESHOLD:
         return None
 
+    # ATR quality gate — skip stocks too volatile for ATR sizer to produce viable R:R
+    atr_abs = behavioral["atr"]
+    atr_pct = round(atr_abs / cur_price * 100, 2) if (atr_abs and cur_price > 0) else 0.0
+    if atr_pct > MAX_ATR_PCT:
+        return None
+
     return {
         "ticker":         ticker,
         "technical_score": score,
@@ -243,6 +249,7 @@ def _score_ticker(ticker: str, skip_volume_surge: bool = False) -> dict | None:
         "vwap_signal":    behavioral["vwap_signal"],
         "gap_pct":        behavioral["gap_pct"],
         "atr":            behavioral["atr"],
+        "atr_pct":        atr_pct,
         "atr_ratio":      behavioral["atr_ratio"],
         "rs_vs_sector":   behavioral["rs_vs_sector"],
         "signals":        signals + behavioral["behavior_signals"],

@@ -240,6 +240,7 @@ def write_daily_performance() -> None:
         # Alpaca equity reconciliation — only for the total row (pool=None)
         alpaca_equity = None
         friction_gap  = None
+        friction_breakdown = None
         if pool is None:
             try:
                 from agents.alpaca_broker import _get as _broker
@@ -255,6 +256,23 @@ def write_daily_performance() -> None:
                       f"B calc=${our_calc:,.2f} | gap={gap_sign}${friction_gap:,.2f}")
             except Exception as e:
                 print(f"[pool_scorer] Alpaca equity fetch failed: {e}")
+
+            fills = [
+                p for p in today_c
+                if p.get("fill_price") is not None and float(p.get("entry_price") or 0) > 0
+            ]
+            if fills:
+                slippages = [
+                    abs(float(p["fill_price"]) - float(p["entry_price"])) / float(p["entry_price"]) * 10_000
+                    for p in fills
+                ]
+                friction_breakdown = {
+                    "total_entry_slippage_bps": round(sum(slippages), 1),
+                    "avg_slippage_bps":         round(sum(slippages) / len(slippages), 1),
+                    "fills_with_data":          len(fills),
+                }
+                print(f"[pool_scorer] Friction: avg slip {friction_breakdown['avg_slippage_bps']}bps "
+                      f"over {len(fills)} fill(s)")
 
         row = {
             "date":              today,
@@ -272,6 +290,7 @@ def write_daily_performance() -> None:
             "regime_label":      regime_label,
             "alpaca_equity":     alpaca_equity,
             "friction_gap":      friction_gap,
+            "friction_breakdown": friction_breakdown,
         }
         db.upsert("b_daily_performance", row, on_conflict="date,pool")
 

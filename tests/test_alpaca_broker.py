@@ -444,6 +444,32 @@ def test_reconcile_bracket_exit_no_filled_leg_skips_update(mock_get, mock_select
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker._get")
+def test_reconcile_datetime_filled_at_not_string(mock_get, mock_select, mock_update):
+    """filled_at is a datetime object — str() wrap must prevent AttributeError."""
+    from datetime import datetime
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"] = "AAPL"
+    pos["status"] = "OPEN"
+
+    o = MagicMock()
+    o.symbol = "AAPL"
+    o.side = "buy"
+    o.status = "filled"
+    o.filled_at    = datetime.utcnow()   # datetime object, not string
+    o.submitted_at = datetime.utcnow()
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = [o]
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()   # must not raise AttributeError
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
 def test_reconcile_filled_buy_not_marked_unfilled(mock_get, mock_select, mock_update):
     """Entry filled (buy=filled) — must never be marked UNFILLED regardless of bracket state."""
     from agents.alpaca_broker import _reconcile_with_alpaca
