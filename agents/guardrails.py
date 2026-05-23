@@ -14,7 +14,7 @@ Checks applied in order:
 from __future__ import annotations
 from datetime import date
 import yfinance as yf
-from config.settings import TARGET_PCT, MAX_LOSS_PER_TRADE, MIN_REWARD_RISK, PRICE_SANITY_PCT, TOTAL_CAPITAL
+from config.settings import TARGET_PCT, INTRADAY_TARGET_PCT, MAX_LOSS_PER_TRADE, MIN_REWARD_RISK, PRICE_SANITY_PCT, TOTAL_CAPITAL
 from core import db
 
 
@@ -122,10 +122,12 @@ def _validate(trade: dict, already_traded: set[str],
     if stop >= entry:
         return f"stop {stop} >= entry {entry}"
 
-    # Formula validation
-    expected_target = round(entry * (1 + TARGET_PCT), 2)
-    if abs(target - expected_target) / expected_target > 0.02:
-        return f"target {target} deviates from formula {expected_target}"
+    # Formula validation — accept premarket ceiling (TARGET_PCT) or intraday cap (INTRADAY_TARGET_PCT)
+    expected_premarket = round(entry * (1 + TARGET_PCT), 2)
+    expected_intraday  = round(entry * (1 + INTRADAY_TARGET_PCT), 2)
+    if (abs(target - expected_premarket) / expected_premarket > 0.02 and
+            abs(target - expected_intraday) / expected_intraday > 0.02):
+        return f"target {target} deviates from formula {expected_premarket} (premarket) or {expected_intraday} (intraday)"
 
     expected_stop = round(entry * (1 - MAX_LOSS_PER_TRADE), 2)
     if abs(stop - expected_stop) / expected_stop > 0.02:

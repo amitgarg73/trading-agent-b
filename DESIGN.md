@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v1.3 · **Updated:** 2026-05-23
+**Version:** v1.4 · **Updated:** 2026-05-23
 
 ---
 
@@ -382,17 +382,18 @@ Confidence is assigned by Claude based on behavioral context, VWAP position, and
 
 ```
 entry_price    = Alpaca ask price (live) or scanner close
-target_price   = round(entry × 1.0200, 2)   # +2.0% full target (premarket)
-partial_target = round(entry × 1.0100, 2)   # +1.0% partial exit (Leg A)
+target_price   = round(entry × 1.04, 2)     # +4% ceiling — limit order on Leg B
+partial_target = round(entry × 1.01, 2)     # +1% partial exit (Leg A)
 stop_loss      = round(entry × 0.9933, 2)   # −0.67% stop
 shares         = int(position_size / entry)
 
-Reward:Risk (premarket)  = 2.00% / 0.67% = 2.99 ≈ 3:1
-Reward:Risk (intraday)   = 1.00% / 0.67% = 1.49 ≈ 1.5:1 → min floor 2.0 so
-                           intraday entries only fire when conditions are strong
+Reward:Risk (ceiling)    = 4.00% / 0.67% = 6.0:1
+Reward:Risk (intraday)   = 1.00% / 0.67% = 1.49 ≈ 1.5:1
 ```
 
-**Intraday cap:** Momentum entries use +1% target (not +2%) because time remaining to EOD is shorter. Risk Agent enforces R:R ≥ 2.0 on intraday entries using the 1% target.
+**Ceiling vs trail:** Native trailing stop (1% from peak) handles most exits between +0.5% and +3.9%. The 4% ceiling limit order only fires on straight-line momentum runs with no 1% pullback — the days you want maximum capture. Raised from 2.5% to avoid prematurely capping strong momentum days.
+
+**Intraday cap:** Momentum entries use +1% target (not +4%) because time remaining to EOD is shorter. Guardrails accepts either `TARGET_PCT` (4%) or `INTRADAY_TARGET_PCT` (1%) to correctly validate both entry types.
 
 ### 7.3 Partial Profit Design
 
@@ -465,7 +466,7 @@ The Pool Filter itself is a risk layer — only stocks with proven behavioral tr
 | Parameter | Value | Purpose |
 |-----------|-------|---------|
 | `TOTAL_CAPITAL` | $50,000 | Simulated account size |
-| `TARGET_PCT` | 2.0% | Full profit target (premarket) |
+| `TARGET_PCT` | 4.0% | Ceiling limit order on Leg B — trail exits earlier in most trades |
 | `INTRADAY_TARGET_PCT` | 1.0% | Intraday entry profit target |
 | `PARTIAL_PROFIT_PCT` | 1.0% | Partial exit (Leg A) |
 | `MAX_LOSS_PER_TRADE` | 0.67% | Stop loss depth |
@@ -631,6 +632,13 @@ notes           text
 ---
 
 ## 12. Change Log
+
+### v1.4 — 2026-05-23
+
+**Raise ceiling from 2.5% to 4% on Leg B**
+
+- `config/settings.py`: `TARGET_PCT` 0.025 → 0.04. Trail does the actual exit work on most trades; 2.5% was prematurely capping strong momentum days (3–4% straight-line runs).
+- `agents/guardrails.py`: Formula validation now accepts either `TARGET_PCT` (4% premarket ceiling) or `INTRADAY_TARGET_PCT` (1% intraday cap). Previously only checked against `TARGET_PCT`, which caused intraday trades to be rejected after the ceiling raise.
 
 ### v1.3 — 2026-05-23
 
