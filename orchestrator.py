@@ -473,12 +473,18 @@ def eod(broker: str = "alpaca") -> None:
         closed = []
 
     print("\n[2] Running pool scorer...")
-    scoring = score_today()
-    print(f"    Scored {scoring['scored']} stocks | "
-          f"Promoted: {scoring['promoted']} | Demoted: {scoring['demoted']}")
+    try:
+        scoring = score_today()
+        print(f"    Scored {scoring['scored']} stocks | "
+              f"Promoted: {scoring['promoted']} | Demoted: {scoring['demoted']}")
+    except Exception as e:
+        print(f"  ⚠️  Pool scorer failed — tomorrow's Pool 3 will use stale scores: {e}")
 
     print("\n[3] Writing daily performance...")
-    write_daily_performance()
+    try:
+        write_daily_performance()
+    except Exception as e:
+        print(f"  ⚠️  write_daily_performance failed — dashboard will show no data for today: {e}")
 
     print(f"\n✅ EOD complete — closed {len(closed)} position(s)")
 

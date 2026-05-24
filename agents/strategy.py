@@ -8,6 +8,7 @@ make decisions with stock-specific knowledge, not just today's technicals.
 from __future__ import annotations
 import json
 import re
+import time
 import anthropic
 from datetime import datetime, timezone, timedelta
 from config.settings import (
@@ -142,12 +143,25 @@ def select_trades(candidates: list[dict], market_context: dict, pool3_context: l
 
     user_msg = json.dumps(payload, default=str)
 
-    resp = client.messages.create(
-        model="claude-opus-4-7",
-        max_tokens=2048,
-        system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": user_msg}],
-    )
+    last_exc = None
+    for attempt in range(1, 4):
+        try:
+            resp = client.messages.create(
+                model="claude-opus-4-7",
+                max_tokens=2048,
+                system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            break
+        except (anthropic.APIConnectionError, anthropic.APITimeoutError,
+                anthropic.RateLimitError, anthropic.InternalServerError) as exc:
+            last_exc = exc
+            wait = 15 * attempt
+            print(f"  ⚠️  Anthropic API error (attempt {attempt}/3): {exc} — retrying in {wait}s")
+            time.sleep(wait)
+    else:
+        print(f"  ❌ Anthropic API failed after 3 attempts: {last_exc} — skipping trade selection")
+        return {"trades": [], "summary": "Claude unavailable — API error.", "pass": False}
 
     raw  = resp.content[0].text.strip()
     match = re.search(r"\{.*\}", raw, re.DOTALL)
