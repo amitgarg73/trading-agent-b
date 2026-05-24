@@ -191,6 +191,8 @@ class TestRunEval:
             def _sel(table, **kw):
                 if "performance" in table:
                     return perf_rows
+                if "planned_trades" in table:
+                    return []
                 return positions
             mock_db.select.side_effect = _sel
             from eval_b import run_eval
@@ -204,6 +206,8 @@ class TestRunEval:
             def _sel(table, **kw):
                 if "performance" in table:
                     return perf_rows
+                if "planned_trades" in table:
+                    return []
                 return positions
             mock_db.select.side_effect = _sel
             from eval_b import run_eval

@@ -83,14 +83,17 @@ def _compute_metrics(perf_rows: list[dict], positions: list[dict]) -> dict:
     orphaned    = [p for p in positions
                    if p.get("status") == "OPEN"
                    and str(p.get("date") or "")[:10] != today_iso]
-    seen: dict[str, set] = {}
-    dup_count = 0
+    # Duplicate ticker same day — real guardrail failures only.
+    # Partial profit splits open Leg A + Leg B for the same ticker under the same plan_id.
+    all_pt     = db.select("b_planned_trades")
+    pt_to_plan = {pt["id"]: pt.get("plan_id") for pt in all_pt}
+    ticker_day_plans: dict[tuple, set] = {}
     for p in closed:
-        d = str(p.get("date") or "")[:10]
-        seen.setdefault(d, set())
-        if p["ticker"] in seen[d]:
-            dup_count += 1
-        seen[d].add(p["ticker"])
+        ptid    = p.get("planned_trade_id")
+        plan_id = pt_to_plan.get(ptid) if ptid else f"__pos_{id(p)}"
+        key     = (p["ticker"], str(p.get("closed_at") or p.get("date") or "")[:10])
+        ticker_day_plans.setdefault(key, set()).add(plan_id)
+    dup_count = sum(1 for pids in ticker_day_plans.values() if len(pids) > 1)
 
     rr_violations = [
         {"ticker": p["ticker"], "rr": round(
