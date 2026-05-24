@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v1.6 · **Updated:** 2026-05-23
+**Version:** v1.8 · **Updated:** 2026-05-23
 
 ---
 
@@ -188,10 +188,12 @@ Runs once before significant intraday volume develops. Pool Filter runs first to
 
 | Step | What Happens |
 |------|-------------|
+| **Dedup Guard** | Checks `b_scan_results` for a `run_eod_started` record for today. If found, exits immediately — prevents double-runs when GitHub Actions fires twice. |
+| **Start Log** | `_log_run_b("eod", "started")` writes a record to `b_scan_results`. Subsequent crash or completion updates the same record to `failed`/`completed`. |
 | **Close Positions** | Market-sell all remaining open positions. Cancel pending bracket legs. |
-| **Pool Scoring** | Pool Scorer evaluates each Pool 3 stock: win/loss, P&L, slippage vs ATR, setup alignment score. Writes to `b_stock_scores`. Computes 7-day rolling score. Promotes/demotes stocks between Pool 1 and Pool 2. |
-| **Daily Performance** | Writes P&L summary to `b_daily_performance`: realized P&L, win rate, position count, best/worst trade. |
-| **Daily Summary** | Generates narrative summary for review. |
+| **Alert on Unclosed** | If any positions remain open after close attempt, `send_alert()` fires a Gmail SMTP alert. |
+| **Pool Scoring** | Pool Scorer evaluates each Pool 3 stock: win/loss, P&L, slippage vs ATR, setup alignment score. Writes to `b_stock_scores`. Computes 7-day rolling score. Promotes/demotes stocks between Pool 1 and Pool 2. Both `score_today()` and `write_daily_performance()` are wrapped in `try/except` — failures print a warning but do not crash EOD. |
+| **Daily Performance** | Writes P&L summary to `b_daily_performance`: realized P&L, win rate, position count, best/worst trade, plus `friction_breakdown` (entry slippage bps), `alpaca_equity`, `friction_gap`, `vix_level`, `fear_greed`, `spy_change_pct`, `regime_label`. |
 
 ---
 
@@ -438,16 +440,17 @@ effective_stop = max(stop_loss, high_watermark × (1 − 0.5%))
 
 ## 8. Risk Controls
 
-Five independent layers applied in sequence — any one can block a trade:
+Six independent layers applied in sequence — any one can block a trade:
 
 | Layer | Agent | What It Blocks |
 |-------|-------|----------------|
 | **Market Gate** | Market Context | Trading on crash days (futures < −1.5%), extreme volatility |
 | **News Filter** | News Intel | Earnings-day tickers, negative catalyst stocks |
-| **Risk Agent** | risk.py | R:R below 2.0 floor, position size out of bounds, stop too wide |
+| **Risk Agent** | risk.py | R:R below 2.0 floor, position size out of bounds, stop too wide; daily loss limit checked as MTM (realized + unrealized) so open positions bleeding losses fire the limit before new trades are entered |
 | **Sector Guard** | sector_guard.py | Sector concentration breaches |
 | **ATR Sizer** | atr_sizer.py | Drops trades where ATR stop ≥ target; halves shares on choppy opens (ORB < 0.5 × ATR) |
 | **Guardrails** | guardrails.py | Duplicates, price sanity (>5% from market), daily loss limit, max positions |
+| **API Resilience** | strategy.py | Anthropic API failures: 3-attempt retry with 15/30/45s backoff; on total failure returns empty trades (graceful skip, no crash) |
 
 ### 8.1 Intraday Momentum Guards
 
@@ -642,6 +645,28 @@ notes           text
 ---
 
 ## 12. Change Log
+
+### v1.8 — 2026-05-23
+
+**Structural gap fixes (Gaps 4, 5, 6, 7, 8)**
+
+- **Gap 4 — MTM loss limit** (`agents/risk.py`): `validate()` now checks MTM P&L (realized + unrealized) via `_today_net_pnl(open_pos)`. Open positions bleeding losses now fire the daily loss limit before new trades are entered.
+- **Gap 5 — EOD dedup guard** (`orchestrator.py`): `eod()` checks `b_scan_results` for a `run_eod_started` record before proceeding; exits early on duplicate. Intraday guard also skips if no `b_trade_plans` row exists for today.
+- **Gap 6 — Run observability** (`core/alerts.py` added): Gmail SMTP alert module. `_log_run_b()` writes start/complete/failed records to `b_scan_results`. EOD sends alert on crash or unclosed positions after market close.
+- **Gap 7 — Eval framework** (`eval_b.py` created): `_compute_metrics()`, `_gate_check()`, `run_eval()`. Pass criteria: avg P&L ≥ $500, win day rate ≥ 80%, trade win rate ≥ 60%, grade A, no integrity flags. CLI exits 1 on gate failure. Run: `python3 eval_b.py --days 14`.
+- **Gap 8 — Silent pool scoring failure** (`orchestrator.py`): `score_today()` and `write_daily_performance()` wrapped in `try/except` with warning prints. EOD no longer crashes silently if pool scoring fails.
+- `from __future__ import annotations` added to `orchestrator.py` for Python 3.9 compatibility with `dict | None` type hints.
+- 52 new tests: `test_mtm_loss_limit.py` (7), `test_eod_dedup_and_logging.py` (10), `test_eval_b.py` (23), `test_gap_fixes.py` (updated, +3 mocks fixed).
+- Tests: 237 passing.
+
+### v1.7 — 2026-05-23
+
+**Friction gap reconciliation fix**
+
+- `agents/pool_scorer.py`: Added `_alpaca_order_pnl()` helper. Fetches today's `stratb_`-tagged BUY orders from Alpaca, computes P&L from bracket exit leg fills, falls back to DB `realized_pnl` for manual closes. `friction_gap` is now per-strategy, not combined A+B account equity.
+- `alpaca_equity` kept as informational (combined A+B, labelled clearly in the performance row).
+- 3 new tests: bracket exit P&L, manual fallback, wrong-tag filter.
+- Tests: 185 passing.
 
 ### v1.6 — 2026-05-23
 
