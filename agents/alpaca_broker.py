@@ -486,8 +486,9 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
         )
         close_order = broker.submit_order(req)
 
-        # Verify the sell actually filled before marking CLOSED in DB
-        for _ in range(5):
+        # Verify the sell actually filled before marking CLOSED in DB.
+        # Use 15 attempts (15s) — EOD market sells can lag at 3:55 PM before flush.
+        for attempt in range(15):
             time.sleep(1)
             try:
                 result = broker.get_order_by_id(str(close_order.id))
@@ -504,7 +505,7 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
                 pass
 
         if not close_confirmed:
-            print(f"[alpaca] ⚠️ Could not confirm close for {ticker} after 5s — position stays OPEN in DB")
+            print(f"[alpaca] ⚠️ Could not confirm close for {ticker} after 15s — position stays OPEN in DB")
             return
 
     except Exception as e:
