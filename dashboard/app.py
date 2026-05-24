@@ -3,7 +3,8 @@ Strategy B Dashboard — Streamlit app.
 
 Page 0: Summary — KPIs, in-flight positions, trade plan, heatmap
 Page 1: Today — intraday detail with market context, watermarks, 7-day sparkline
-Page 2: Strategy B — pools, scores, P&L history
+Page 2: Performance — Agent Scorecard, charts, exit reasons, integrity
+Page 3: Strategy B — pools, scores, P&L history
 """
 import streamlit as st
 import pandas as pd
@@ -21,6 +22,7 @@ from core import db
 from config.settings import (
     DASHBOARD_PASSWORD, TOTAL_CAPITAL, DAILY_PROFIT_TARGET,
     DAILY_LOCK_IN_TARGET, DAILY_BONUS_TARGET,
+    MIN_REWARD_RISK, MIN_POSITION_PCT, MAX_POSITION_PCT, DAILY_LOSS_LIMIT,
 )
 from config.blue_chips import POOL_2_SEED, SECTOR_MAP
 
@@ -43,7 +45,7 @@ if not _check_password():
     st.stop()
 
 # --- Navigation ---
-page = st.sidebar.radio("View", ["Summary", "Today", "Strategy B"])
+page = st.sidebar.radio("View", ["Summary", "Today", "Performance", "Strategy B"])
 
 
 def _fmt_pnl(v: float) -> str:
@@ -52,6 +54,115 @@ def _fmt_pnl(v: float) -> str:
 
 def _pnl_color(v: float) -> str:
     return "#2ecc71" if v > 0 else "#e74c3c" if v < 0 else "#95a5a6"
+
+
+def _compute_metrics_b(perf_rows: list[dict], positions: list[dict]) -> dict:
+    """Compute Agent Scorecard metrics from b_daily_performance + b_positions."""
+    if not perf_rows:
+        return {}
+
+    total_rows   = [r for r in perf_rows if r.get("pool") is None]
+    if not total_rows:
+        return {}
+
+    days         = len(total_rows)
+    avg_pnl      = sum(r.get("gross_pnl", 0) or 0 for r in total_rows) / days
+    win_days     = sum(1 for r in total_rows if (r.get("gross_pnl", 0) or 0) > 0)
+    avg_wr       = sum((r.get("win_rate", 0) or 0) * 100 for r in total_rows) / days
+
+    closed = [p for p in positions if p.get("status") == "CLOSED"
+              and p.get("close_reason") not in ("UNFILLED", "CLEANUP")]
+    wins_t   = [p for p in closed if (p.get("realized_pnl") or 0) > 0]
+    losses_t = [p for p in closed if (p.get("realized_pnl") or 0) <= 0]
+    avg_win  = sum(p.get("realized_pnl", 0) or 0 for p in wins_t) / len(wins_t) if wins_t else 0
+    avg_loss = abs(sum(p.get("realized_pnl", 0) or 0 for p in losses_t) / len(losses_t)) if losses_t else 0
+    actual_rr = round(avg_win / avg_loss, 2) if avg_loss else 0
+
+    # Close reason breakdown
+    close_reasons: dict[str, int] = {}
+    for p in closed:
+        cr = p.get("close_reason") or p.get("exit_mechanism") or "UNKNOWN"
+        close_reasons[cr] = close_reasons.get(cr, 0) + 1
+
+    # Best / worst trade in window
+    pnl_vals = [(p.get("realized_pnl") or 0, p.get("ticker", "?")) for p in closed]
+    best_pnl, best_ticker   = max(pnl_vals, key=lambda x: x[0]) if pnl_vals else (0, None)
+    worst_pnl, worst_ticker = min(pnl_vals, key=lambda x: x[0]) if pnl_vals else (0, None)
+
+    # Confidence cohort
+    conf_stats: dict[str, dict] = {}
+    for level in ("HIGH", "MEDIUM", "LOW"):
+        cohort = [p for p in closed if (p.get("confidence") or "").upper() == level]
+        if cohort:
+            c_wins = [p for p in cohort if (p.get("realized_pnl") or 0) > 0]
+            c_pnl  = sum(p.get("realized_pnl", 0) or 0 for p in cohort)
+            conf_stats[level] = {
+                "count":    len(cohort),
+                "win_rate": len(c_wins) / len(cohort) * 100,
+                "avg_pnl":  c_pnl / len(cohort),
+                "total_pnl": c_pnl,
+            }
+
+    # Integrity
+    date_set    = {str(r["date"])[:10] for r in total_rows}
+    orphaned    = [p for p in positions if p.get("status") == "OPEN"
+                   and str(p.get("date") or "")[:10] not in {str(date.today())[:10]}]
+    seen: dict[str, set] = {}
+    dup_count = 0
+    for p in closed:
+        d = str(p.get("date") or "")[:10]
+        seen.setdefault(d, set())
+        if p["ticker"] in seen[d]:
+            dup_count += 1
+        seen[d].add(p["ticker"])
+
+    rr_violations = [
+        {"ticker": p["ticker"], "rr": round(
+            (float(p["target_price"]) - float(p["entry_price"])) /
+            max(float(p["entry_price"]) - float(p["stop_loss"]), 0.0001), 2
+        )}
+        for p in closed
+        if p.get("target_price") and p.get("stop_loss") and p.get("entry_price")
+        and (float(p["target_price"]) - float(p["entry_price"])) /
+            max(float(p["entry_price"]) - float(p["stop_loss"]), 0.0001) < MIN_REWARD_RISK
+    ]
+    size_violations = [
+        {"ticker": p["ticker"], "size": p.get("position_size")}
+        for p in closed
+        if p.get("position_size") and not (
+            MIN_POSITION_PCT * TOTAL_CAPITAL <= float(p["position_size"]) <= MAX_POSITION_PCT * TOTAL_CAPITAL
+        )
+    ]
+
+    unfilled_count  = sum(1 for p in positions if p.get("close_reason") == "UNFILLED"
+                          and str(p.get("date") or "")[:10] in date_set)
+    total_attempted = len(closed) + unfilled_count
+
+    loss_limit_days = sum(1 for r in total_rows if (r.get("gross_pnl", 0) or 0) < (DAILY_LOSS_LIMIT or -500))
+    lock_in_days    = sum(1 for r in total_rows if (r.get("gross_pnl", 0) or 0) >= DAILY_LOCK_IN_TARGET)
+
+    # Friction gap
+    gap_rows = [r for r in total_rows if r.get("friction_gap") is not None]
+
+    # Grade
+    pnl_score = min(avg_pnl / DAILY_PROFIT_TARGET * 40, 40) if DAILY_PROFIT_TARGET else 0
+    wd_score  = win_days / days * 30 if days else 0
+    wr_score  = avg_wr / 100 * 30
+    score     = pnl_score + wd_score + wr_score
+    grade     = "A" if score >= 80 else "B" if score >= 60 else "C" if score >= 40 else "D"
+
+    return dict(
+        days=days, avg_daily_pnl=avg_pnl, win_days=win_days, avg_win_rate=avg_wr,
+        actual_rr=actual_rr, close_reasons=close_reasons,
+        best_ticker=best_ticker, best_pnl=best_pnl,
+        worst_ticker=worst_ticker, worst_pnl=worst_pnl,
+        confidence_stats=conf_stats,
+        orphaned=orphaned, duplicate_count=dup_count,
+        rr_violations=rr_violations, size_violations=size_violations,
+        unfilled_count=unfilled_count, total_attempted=total_attempted,
+        loss_limit_days=loss_limit_days, lock_in_days=lock_in_days,
+        gap_rows=gap_rows, grade=grade, score=round(score, 1),
+    )
 
 
 def _show_runs_table_b(run_date: str, open_positions: list, closed_positions: list):
@@ -642,6 +753,354 @@ elif page == "Today":
     if plan and plan.get("status") == "HALTED":
         st.divider()
         st.warning(f"**Halt reason:** {plan.get('risk_note', 'No details recorded')}")
+
+
+# ============================================================
+# PAGE 2: Performance
+# ============================================================
+elif page == "Performance":
+    st.title("Performance History — Strategy B")
+
+    # ── Date range selector ───────────────────────────────────────
+    _all_perf_b   = db.select("b_daily_performance", order="date")
+    _total_rows_b = [r for r in _all_perf_b if r.get("pool") is None]
+    _total_days_b = len(_total_rows_b)
+    _range_opts_b = {k: v for k, v in {"Last 7 days": 7, "Last 30 days": 30, "All time": None}.items()
+                     if v is None or _total_days_b >= v}
+    if not _range_opts_b:
+        _range_opts_b = {"Last 7 days": 7}
+    _selected_b = st.radio("Date range", list(_range_opts_b.keys()), horizontal=True, index=0)
+    _n_days_b   = _range_opts_b[_selected_b]
+
+    if not _total_rows_b:
+        st.info("No performance data yet — runs after first EOD.")
+        st.stop()
+
+    # ── Filter to window ──────────────────────────────────────────
+    df_b = pd.DataFrame(_total_rows_b).sort_values("date")
+    if _n_days_b:
+        _cutoff_b = (pd.Timestamp.today() - pd.Timedelta(days=_n_days_b)).strftime("%Y-%m-%d")
+        df_b = df_b[df_b["date"] >= _cutoff_b]
+    if df_b.empty:
+        st.info(f"No data in the selected range ({_selected_b}).")
+        st.stop()
+
+    # ── Load positions for scorecard ──────────────────────────────
+    _all_pos_b = db.select("b_positions")
+
+    # ── Daily history table ───────────────────────────────────────
+    _hist_b = []
+    for _, _dr in df_b.sort_values("date", ascending=False).iterrows():
+        _wr   = (_dr.get("win_rate") or 0) * 100
+        _gpnl = _dr.get("gross_pnl", 0) or 0
+        _hist_b.append({
+            "Date":    str(_dr["date"])[:10],
+            "P&L":     _fmt_pnl(_gpnl),
+            "Trades":  int(_dr.get("trades_taken", 0) or 0),
+            "Win %":   f"{_wr:.0f}%",
+            "Regime":  _dr.get("regime_label") or "—",
+            "VIX":     _dr.get("vix_level") or "—",
+        })
+    if _hist_b:
+        st.dataframe(pd.DataFrame(_hist_b), use_container_width=True, hide_index=True)
+
+    # ── P&L charts ────────────────────────────────────────────────
+    _days_b = len(df_b)
+    if _days_b >= 2:
+        df_b_sorted = df_b.sort_values("date")
+        df_b_sorted["cumulative"] = df_b_sorted["gross_pnl"].cumsum()
+        _bar_colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in df_b_sorted["gross_pnl"]]
+        fig_b = go.Figure()
+        fig_b.add_trace(go.Bar(x=df_b_sorted["date"], y=df_b_sorted["gross_pnl"],
+                               marker_color=_bar_colors, name="Daily P&L"))
+        fig_b.add_trace(go.Scatter(x=df_b_sorted["date"], y=df_b_sorted["cumulative"],
+                                   mode="lines+markers", name="Cumulative",
+                                   line=dict(color="#3498db", width=2), yaxis="y2"))
+        fig_b.update_layout(
+            title="Daily P&L (bars) + Cumulative (line)",
+            yaxis=dict(title="Daily P&L ($)"),
+            yaxis2=dict(title="Cumulative ($)", overlaying="y", side="right"),
+            template="plotly_dark", height=320,
+        )
+        st.plotly_chart(fig_b, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Scorecard ─────────────────────────────────────────────────
+    ev_b  = _compute_metrics_b(perf_rows=df_b.to_dict("records"), positions=_all_pos_b) or {}
+    days_b = len(df_b)
+
+    if not ev_b or days_b < 5:
+        st.info(f"📊 **Scorecard needs ≥ 5 trading days** — {days_b} day{'s' if days_b != 1 else ''} recorded so far.")
+    else:
+        _grade_b      = ev_b.get("grade", "?")
+        _grade_label_b = {"A": "Excellent", "B": "Good", "C": "Mediocre", "D": "Poor"}.get(_grade_b, "")
+        with st.expander(
+            f"Agent Scorecard — {days_b} trading day{'s' if days_b != 1 else ''} of data ({_selected_b}) · "
+            f"Grade **{_grade_b}** ({_grade_label_b})",
+            expanded=True,
+        ):
+            # ── Verdict ──────────────────────────────────────────
+            st.markdown("#### Verdict")
+            st.caption(
+                f"Score = P&L vs target (up to 40 pts: avg daily P&L ÷ ${DAILY_PROFIT_TARGET:,} × 40)  "
+                f"+ Win day rate (30 pts: profitable days ÷ total days × 30)  "
+                f"+ Trade win rate (30 pts: % of trades won × 30).  "
+                f"Grade: A ≥ 80 · B ≥ 60 · C ≥ 40 · D < 40."
+            )
+
+            _pnl_b      = ev_b.get("avg_daily_pnl", 0)
+            _pnl_pct_b  = _pnl_b / DAILY_PROFIT_TARGET * 100 if DAILY_PROFIT_TARGET else 0
+            _win_days_b = ev_b.get("win_days", 0)
+            _wd_pct_b   = _win_days_b / days_b * 100 if days_b else 0
+            _wr_b       = ev_b.get("avg_win_rate", 0)
+            _rr_b       = ev_b.get("actual_rr", 0)
+            _cr_b       = ev_b.get("close_reasons", {})
+            _total_cr_b = sum(_cr_b.values()) or 1
+
+            _wins_b, _watchs_b, _actions_b = [], [], []
+
+            if _pnl_b >= DAILY_PROFIT_TARGET:
+                _wins_b.append(f"Avg daily P&L ${_pnl_b:,.0f} — on or above ${DAILY_PROFIT_TARGET:,} target")
+            elif _pnl_pct_b >= 60:
+                _watchs_b.append(f"Avg daily P&L ${_pnl_b:,.0f} is {_pnl_pct_b:.0f}% of ${DAILY_PROFIT_TARGET:,} target")
+            else:
+                _actions_b.append(f"Avg daily P&L ${_pnl_b:,.0f} well below ${DAILY_PROFIT_TARGET:,} target ({_pnl_pct_b:.0f}%)")
+
+            if _wd_pct_b >= 80:
+                _wins_b.append(f"{_win_days_b}/{days_b} profitable days ({_wd_pct_b:.0f}%) — consistent execution")
+            elif _wd_pct_b >= 60:
+                _watchs_b.append(f"{_win_days_b}/{days_b} profitable days ({_wd_pct_b:.0f}%) — more losing days than ideal")
+            else:
+                _actions_b.append(f"Only {_win_days_b}/{days_b} profitable days — strategy inconsistency")
+
+            if _wr_b >= 60:
+                _wins_b.append(f"{_wr_b:.0f}% trade win rate — well above 25% break-even for 3:1 R:R")
+            elif _wr_b >= 50:
+                _watchs_b.append(f"{_wr_b:.0f}% trade win rate — above break-even but room to improve")
+            else:
+                _watchs_b.append(f"{_wr_b:.0f}% trade win rate — approaching break-even; tighten entry criteria")
+
+            if _rr_b >= 3.0:
+                _wins_b.append(f"Reward:risk {_rr_b:.1f}x — meeting 3:1 target")
+            elif _rr_b >= 2.0:
+                _watchs_b.append(f"Reward:risk {_rr_b:.1f}x — below 3.0x target; losers running slightly large")
+            else:
+                _actions_b.append(f"Reward:risk {_rr_b:.1f}x — well below target; review stops and targets")
+
+            _tgt_pct_b = _cr_b.get("TARGET", 0) / _total_cr_b * 100
+            if _tgt_pct_b >= 50:
+                _wins_b.append(f"{_tgt_pct_b:.0f}% of exits hit target — momentum strategy executing as designed")
+            elif _cr_b.get("STOP", 0) / _total_cr_b > 0.5:
+                _watchs_b.append(f"More stops than targets — entries may be too late in the move")
+
+            _cs_b = ev_b.get("confidence_stats", {})
+            _high_b, _low_b = _cs_b.get("HIGH"), _cs_b.get("LOW")
+            if _high_b and _low_b:
+                if _high_b["avg_pnl"] > _low_b["avg_pnl"]:
+                    _wins_b.append(f"HIGH confidence trades earning ${_high_b['avg_pnl']:,.0f} avg vs ${_low_b['avg_pnl']:,.0f} for LOW — sizing justified")
+                else:
+                    _watchs_b.append(f"LOW outperforming HIGH (${_low_b['avg_pnl']:,.0f} vs ${_high_b['avg_pnl']:,.0f}) — confidence signal unreliable")
+
+            _orphaned_b = ev_b.get("orphaned", [])
+            if _orphaned_b:
+                _actions_b.append(f"{len(_orphaned_b)} orphaned position(s) stuck OPEN from a prior day")
+            if ev_b.get("rr_violations"):
+                _actions_b.append(f"{len(ev_b['rr_violations'])} trade(s) submitted below {MIN_REWARD_RISK}x R:R — Claude constraint drift")
+            if ev_b.get("duplicate_count", 0) > 0:
+                _actions_b.append(f"{ev_b['duplicate_count']} duplicate ticker(s) same day — guardrail may have failed")
+            _attempted_b = ev_b.get("total_attempted", 1) or 1
+            _unfill_pct_b = ev_b.get("unfilled_count", 0) / _attempted_b * 100
+            if _unfill_pct_b >= 15:
+                _actions_b.append(f"{_unfill_pct_b:.0f}% unfilled rate — limit entry price too tight")
+            elif _unfill_pct_b >= 5:
+                _watchs_b.append(f"{_unfill_pct_b:.0f}% unfilled rate — monitor; rising trend is a problem")
+
+            _grade_color_b = {"A": "#1e8449", "B": "#1e8449", "C": "#f39c12", "D": "#e74c3c"}.get(_grade_b, "#888")
+            _grade_word_b  = {"A": "excellent", "B": "good", "C": "mixed", "D": "poor"}.get(_grade_b, "")
+            _summary_parts_b = [" ".join(_wins_b)] if _wins_b else []
+            _verdict_b = (
+                f"<span style='color:{_grade_color_b}'><b>Grade {_grade_b} — {_grade_word_b.upper()}.</b></span> "
+                + (" ".join(_summary_parts_b) if _summary_parts_b else "No standout positives yet — more data needed.")
+            )
+            _watch_text_b  = (f"<span style='color:#f39c12'><b>Watch:</b> {'  ·  '.join(_watchs_b)}.</span>"
+                              if _watchs_b else "")
+            _action_text_b = (f"<span style='color:#e74c3c'><b>Action required:</b> {'  ·  '.join(_actions_b)}.</span>"
+                              if _actions_b else "<span style='color:#1e8449'>No action required.</span>")
+            st.markdown(
+                _verdict_b + ("  " + _watch_text_b if _watch_text_b else "") + "  " + _action_text_b,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown("---")
+
+            # ── Key metrics ───────────────────────────────────────────
+            st.markdown("#### Key Metrics")
+            sc1_b, sc2_b, sc3_b, sc4_b, sc5_b = st.columns(5)
+            _total_pnl_b = df_b["gross_pnl"].sum()
+            sc1_b.metric("Total P&L",       _fmt_pnl(_total_pnl_b),
+                         help=f"Cumulative realized P&L over the {days_b}-day window.")
+            sc2_b.metric("Avg Daily P&L",   f"${_pnl_b:,.0f}",
+                         delta=f"target ${DAILY_PROFIT_TARGET:,}",
+                         help=f"Average realized P&L per trading day. Target: ${DAILY_PROFIT_TARGET:,}/day.")
+            sc3_b.metric("Win Days",        f"{_win_days_b} / {days_b}",
+                         help="Days where total realized P&L was positive. Target: ≥80%.")
+            sc4_b.metric("Trade Win Rate",  f"{_wr_b:.1f}%",
+                         help="% of individual trades that closed in profit. Break-even at 3:1 R:R = 25%.")
+            sc5_b.metric("Actual R:R",      f"{_rr_b:.2f}x",
+                         help="Avg winning trade ÷ avg losing trade. Target: ≥3.0x.")
+
+            st.markdown("---")
+
+            # ── Exit reasons + best/worst ──────────────────────────────
+            _exit_explain_b = {
+                "TARGET":   "Hit profit goal — ideal exit",
+                "STOP":     "Stop-loss fired — cut loss",
+                "EOD":      "Market closed, position still open — sold at whatever price",
+                "LOCK_IN":  "Daily profit target hit — all positions closed to protect the day",
+                "CLEANUP":  "Stale open position closed during reconciliation",
+                "UNFILLED": "Limit order never filled — entry price was missed",
+            }
+            st.markdown("**Exit reasons**")
+            _cr_rows_b = [
+                {"Exit": k, "Count": v, "%": f"{v/_total_cr_b*100:.0f}%",
+                 "What it means": _exit_explain_b.get(k, "—")}
+                for k, v in sorted(_cr_b.items(), key=lambda x: -x[1])
+            ]
+            if _cr_rows_b:
+                st.dataframe(pd.DataFrame(_cr_rows_b), use_container_width=True, hide_index=True)
+            if ev_b.get("best_ticker"):
+                st.success(f"Best: {ev_b['best_ticker']}  +${ev_b['best_pnl']:,.2f}")
+            if ev_b.get("worst_ticker"):
+                _worst_pnl_b = ev_b["worst_pnl"]
+                if _worst_pnl_b >= 0:
+                    st.success(f"Worst: {ev_b['worst_ticker']}  +${_worst_pnl_b:,.2f}  (all trades profitable)")
+                else:
+                    st.error(f"Worst: {ev_b['worst_ticker']}  ${_worst_pnl_b:,.2f}")
+
+            st.markdown("---")
+
+            # ── Integrity + Claude quality ─────────────────────────────
+            st.markdown("#### Integrity & Claude Quality")
+            int_col_b, qual_col_b = st.columns(2)
+
+            with int_col_b:
+                st.markdown("**Integrity checks**  — *guardrail audit; these should all be ✅*")
+                _unfill_n_b = ev_b.get("unfilled_count", 0)
+                _uf_icon_b  = "✅" if _unfill_pct_b < 10 else "⚠️"
+                st.markdown(
+                    f"{_uf_icon_b} UNFILLED rate: **{_unfill_n_b}** ({_unfill_pct_b:.0f}%)  "
+                    f"<span style='color:#888;font-size:0.82em'>— limit order submitted but entry never filled. >10% means entry buffer is too tight.</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"{'✅' if not _orphaned_b else '❌'} Orphaned open positions: **{len(_orphaned_b)}**  "
+                    f"<span style='color:#888;font-size:0.82em'>— positions from a prior day still showing OPEN. Should be zero.</span>",
+                    unsafe_allow_html=True,
+                )
+                _dups_b = ev_b.get("duplicate_count", 0)
+                st.markdown(
+                    f"{'✅' if _dups_b == 0 else '❌'} Duplicate tickers same day: **{_dups_b}**  "
+                    f"<span style='color:#888;font-size:0.82em'>— same ticker entered twice in one day. Guardrail should block this.</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"📉 Loss-limit days: **{ev_b.get('loss_limit_days', 0)}** / {days_b}  "
+                    f"<span style='color:#888;font-size:0.82em'>— days where realized P&L went below the daily loss floor (${DAILY_LOSS_LIMIT:,}).</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f"🎯 Lock-in days: **{ev_b.get('lock_in_days', 0)}** / {days_b}  "
+                    f"<span style='color:#888;font-size:0.82em'>— days where realized P&L crossed the ${DAILY_LOCK_IN_TARGET:,} floor.</span>",
+                    unsafe_allow_html=True,
+                )
+                _gap_rows_b = ev_b.get("gap_rows", [])
+                if _gap_rows_b:
+                    _latest_gap_b = float(_gap_rows_b[-1]["friction_gap"])
+                    _avg_gap_b    = sum(float(r["friction_gap"]) for r in _gap_rows_b) / len(_gap_rows_b)
+                    _gap_sign_b   = "+" if _latest_gap_b >= 0 else ""
+                    _gap_icon_b   = "✅" if abs(_latest_gap_b) < 50 else ("⚠️" if abs(_latest_gap_b) < 200 else "❌")
+                    st.markdown(
+                        f"{_gap_icon_b} Broker friction gap (latest): **{_gap_sign_b}${_latest_gap_b:,.2f}**  "
+                        f"<span style='color:#888;font-size:0.82em'>— Strategy B Alpaca fills minus our P&L calc. "
+                        f"Avg: {'+' if _avg_gap_b >= 0 else ''}${_avg_gap_b:,.2f}. "
+                        f"<$50 = ✅ · $50–$200 = ⚠️ · >$200 = ❌ investigate.</span>",
+                        unsafe_allow_html=True,
+                    )
+
+            with qual_col_b:
+                st.markdown("**Claude quality checks**  — *validates Claude is following strategy rules*")
+                _rr_v_b = ev_b.get("rr_violations", [])
+                st.markdown(
+                    f"{'✅' if not _rr_v_b else '❌'} R:R violations: **{len(_rr_v_b)}** trades below {MIN_REWARD_RISK}x  "
+                    f"<span style='color:#888;font-size:0.82em'>— R:R = (target − entry) ÷ (entry − stop). "
+                    f"Claude must submit trades where gain ≥ {MIN_REWARD_RISK}× potential loss.</span>",
+                    unsafe_allow_html=True,
+                )
+                if _rr_v_b:
+                    for _v_b in _rr_v_b:
+                        st.caption(f"  → {_v_b['ticker']} R:R {_v_b['rr']:.2f}x")
+                _sz_v_b = ev_b.get("size_violations", [])
+                st.markdown(
+                    f"{'✅' if not _sz_v_b else '⚠️'} Position size violations: **{len(_sz_v_b)}**  "
+                    f"<span style='color:#888;font-size:0.82em'>— Each position must be ${MIN_POSITION_PCT*TOTAL_CAPITAL:,.0f}–${MAX_POSITION_PCT*TOTAL_CAPITAL:,.0f} "
+                    f"({MIN_POSITION_PCT*100:.0f}%–{MAX_POSITION_PCT*100:.0f}% of ${TOTAL_CAPITAL:,} capital).</span>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    "**Confidence cohort**  — *does Claude's confidence signal predict better outcomes?*  "
+                    f"<span style='color:#888;font-size:0.82em'>HIGH → $7K, MEDIUM → $6K, LOW → $5K. "
+                    "If HIGH confidence doesn't outperform LOW, the signal is unreliable.</span>",
+                    unsafe_allow_html=True,
+                )
+                _conf_rows_b = []
+                for _level_b in ("HIGH", "MEDIUM", "LOW"):
+                    _s_b = _cs_b.get(_level_b)
+                    if _s_b:
+                        _conf_rows_b.append({
+                            "Level": _level_b, "Trades": _s_b["count"],
+                            "Win %": f"{_s_b['win_rate']:.1f}%",
+                            "Avg P&L": f"${_s_b['avg_pnl']:,.2f}",
+                            "Total": f"${_s_b['total_pnl']:,.0f}",
+                        })
+                if _conf_rows_b:
+                    st.dataframe(pd.DataFrame(_conf_rows_b), use_container_width=True, hide_index=True)
+                if _high_b and _low_b:
+                    _delta_b = _high_b["avg_pnl"] - _low_b["avg_pnl"]
+                    if _delta_b > 0:
+                        st.success(f"HIGH outperforming LOW by ${_delta_b:,.2f} avg — sizing justified")
+                    else:
+                        st.warning(f"LOW outperforming HIGH by ${abs(_delta_b):,.2f} — confidence signal unreliable")
+
+    # ── Pool breakdown ────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("#### Pool P&L Breakdown")
+    _pool_rows = [r for r in _all_perf_b if r.get("pool") is not None]
+    if _pool_rows:
+        _pool_df = pd.DataFrame(_pool_rows)
+        if _n_days_b:
+            _pool_df = _pool_df[_pool_df["date"] >= _cutoff_b]
+        if not _pool_df.empty:
+            _pool_summary = (
+                _pool_df.groupby("pool")["gross_pnl"]
+                .sum()
+                .reset_index()
+                .rename(columns={"pool": "Pool", "gross_pnl": "Total P&L"})
+            )
+            _pool_summary["Pool"] = _pool_summary["Pool"].apply(lambda p: f"Pool {p}")
+            _bar_col = ["#2ecc71" if v >= 0 else "#e74c3c" for v in _pool_summary["Total P&L"]]
+            _fig_pool = go.Figure(go.Bar(
+                x=_pool_summary["Pool"], y=_pool_summary["Total P&L"],
+                marker_color=_bar_col, text=_pool_summary["Total P&L"].apply(lambda v: _fmt_pnl(v)),
+                textposition="auto",
+            ))
+            _fig_pool.update_layout(
+                title=f"P&L by Pool — {_selected_b}",
+                yaxis_title="Total P&L ($)", template="plotly_dark", height=280,
+            )
+            st.plotly_chart(_fig_pool, use_container_width=True)
+    else:
+        st.caption("No pool-level breakdown recorded yet.")
 
 
 # ============================================================

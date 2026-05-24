@@ -8,10 +8,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from dotenv import load_dotenv
 load_dotenv()
 
-from core.db import SupabaseClient
+import core.db as db
 from agents.alpaca_broker import _get as alpaca_client, get_open_tickers
-
-db = SupabaseClient()
 
 # ── 1. Check Supabase ────────────────────────────────────────
 rows = db.select("b_positions", filters={"ticker": "JNJ", "status": "OPEN"})
