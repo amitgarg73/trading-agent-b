@@ -23,17 +23,25 @@ def _today_realized_pnl() -> float:
     return sum(r.get("realized_pnl") or 0 for r in rows if str(r.get("closed_at", ""))[:10] == today)
 
 
+def _today_net_pnl(open_pos: list[dict]) -> float:
+    """Realized P&L today + unrealized on current open positions (mark-to-market)."""
+    realized   = _today_realized_pnl()
+    unrealized = sum(float(p.get("unrealized_pnl") or 0) for p in open_pos)
+    return realized + unrealized
+
+
 def validate(trades: list[dict]) -> tuple[list[dict], list[str]]:
     """
     Returns (approved_trades, rejection_reasons).
     Filters out trades that violate risk rules.
+    Loss limit uses mark-to-market P&L (realized + unrealized open positions).
     """
-    open_pos = _open_positions()
-    today_pnl = _today_realized_pnl()
+    open_pos  = _open_positions()
+    today_pnl = _today_net_pnl(open_pos)
     approved, rejected = [], []
 
     if today_pnl <= DAILY_LOSS_LIMIT:
-        return [], [f"Daily loss limit hit (${today_pnl:.0f}) — no new trades"]
+        return [], [f"Daily loss limit hit (${today_pnl:.0f} MTM) — no new trades"]
 
     current_tickers = {p["ticker"] for p in open_pos}
     sector_counts   = {}

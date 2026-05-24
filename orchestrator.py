@@ -2,6 +2,7 @@
 Orchestrator — Strategy B entry point.
 Called by GitHub Actions: python orchestrator.py --mode premarket|intraday|eod
 """
+from __future__ import annotations
 import argparse
 from datetime import date, datetime
 
@@ -11,7 +12,24 @@ from agents import strategy, risk, guardrails, market_context, news_intel, secto
 from agents.alpaca_broker import place_orders, update_positions_intraday, close_all_positions, open_positions
 from agents.pool_scorer import score_today, write_daily_performance
 from core import db
+from core.alerts import send_alert
 from core.pool_manager import seed_pools_if_empty
+
+
+def _log_run_b(mode: str, status: str, details: dict | None = None) -> None:
+    """Write a run-status record to b_scan_results for observability."""
+    try:
+        db.insert("b_scan_results", {
+            "date":       date.today().isoformat(),
+            "scan_type":  f"run_{mode}_{status}",
+            "scanned_at": datetime.utcnow().isoformat(),
+            "candidates": 0,
+            "placed":     0,
+            "results":    {"mode": mode, "status": status, "ts": datetime.utcnow().isoformat(),
+                           **(details or {})},
+        })
+    except Exception as e:
+        print(f"  ⚠️  _log_run_b({mode}, {status}) failed: {e}")
 from config.settings import (
     TOTAL_CAPITAL, POSITION_SIZE_BY_CONFIDENCE,
     MAX_POSITIONS, DAILY_BONUS_TARGET, DAILY_LOSS_LIMIT,
@@ -441,6 +459,13 @@ def intraday(broker: str = "alpaca") -> None:
     if _is_halted():
         return
 
+    # Guard: require a successful premarket plan for today before managing positions
+    today_iso = date.today().isoformat()
+    if not db.select("b_trade_plans", filters={"date": today_iso}):
+        print(f"  ⚠️  INTRADAY SKIPPED — no premarket plan found for {today_iso}. "
+              f"Premarket must complete successfully before intraday runs.")
+        return
+
     # 1. Manage existing positions (reconcile + trail/stop/target)
     positions = open_positions()
     if positions:
@@ -465,28 +490,62 @@ def eod(broker: str = "alpaca") -> None:
     print(f"  STRATEGY B — EOD — {datetime.now().strftime('%Y-%m-%d %H:%M ET')}")
     print(f"{'='*60}\n")
 
-    print("[1] Closing all open positions...")
-    if broker == "alpaca":
-        closed = close_all_positions(reason="EOD")
-    else:
-        print("    Simulation mode — skipping close")
-        closed = []
+    if _is_halted():
+        return
 
-    print("\n[2] Running pool scorer...")
+    # Dedup — EOD should run exactly once per day
+    today_iso = date.today().isoformat()
     try:
-        scoring = score_today()
-        print(f"    Scored {scoring['scored']} stocks | "
-              f"Promoted: {scoring['promoted']} | Demoted: {scoring['demoted']}")
-    except Exception as e:
-        print(f"  ⚠️  Pool scorer failed — tomorrow's Pool 3 will use stale scores: {e}")
+        existing_eod = db.select("b_scan_results", filters={"date": today_iso,
+                                                             "scan_type": "run_eod_started"})
+        if existing_eod:
+            print(f"  ⚠️  EOD already ran for {today_iso} — skipping duplicate run.")
+            return
+    except Exception:
+        pass  # b_scan_results may not exist yet on first run; proceed
 
-    print("\n[3] Writing daily performance...")
+    _log_run_b("eod", "started")
+
     try:
-        write_daily_performance()
-    except Exception as e:
-        print(f"  ⚠️  write_daily_performance failed — dashboard will show no data for today: {e}")
+        open_before = open_positions()
 
-    print(f"\n✅ EOD complete — closed {len(closed)} position(s)")
+        print("[1] Closing all open positions...")
+        if broker == "alpaca":
+            closed = close_all_positions(reason="EOD")
+        else:
+            print("    Simulation mode — skipping close")
+            closed = []
+
+        # Alert if positions were open but nothing got closed
+        if broker == "alpaca" and open_before and len(closed) == 0:
+            still_open = [p["ticker"] for p in open_before]
+            send_alert(
+                f"[Trading Agent B] EOD close FAILED — {len(still_open)} position(s) still open",
+                f"Date: {today_iso}\nStill open: {still_open}\n"
+                f"These positions will carry overnight. Manual close required.",
+            )
+
+        print("\n[2] Running pool scorer...")
+        try:
+            scoring = score_today()
+            print(f"    Scored {scoring['scored']} stocks | "
+                  f"Promoted: {scoring['promoted']} | Demoted: {scoring['demoted']}")
+        except Exception as e:
+            print(f"  ⚠️  Pool scorer failed — tomorrow's Pool 3 will use stale scores: {e}")
+
+        print("\n[3] Writing daily performance...")
+        try:
+            write_daily_performance()
+        except Exception as e:
+            print(f"  ⚠️  write_daily_performance failed — dashboard will show no data for today: {e}")
+
+        print(f"\n✅ EOD complete — closed {len(closed)} position(s)")
+        _log_run_b("eod", "completed", {"closed": len(closed)})
+
+    except Exception as e:
+        _log_run_b("eod", "failed", {"error": str(e)})
+        send_alert(f"[Trading Agent B] EOD run FAILED — {today_iso}", f"Error: {e}")
+        raise
 
 
 if __name__ == "__main__":

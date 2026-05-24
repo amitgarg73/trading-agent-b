@@ -147,12 +147,17 @@ class TestEodPoolScoringNonSilentFailure:
 
         scoring_result = {"scored": 5, "promoted": 1, "demoted": 0}
 
-        with patch("orchestrator.close_all_positions", return_value=[]), \
+        with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_halted", return_value=False), \
+             patch("orchestrator.open_positions", return_value=[]), \
+             patch("orchestrator.close_all_positions", return_value=[]), \
              patch("orchestrator.score_today",
                    side_effect=score_side_effect or [scoring_result]) as mock_score, \
              patch("orchestrator.write_daily_performance",
                    side_effect=write_side_effect or [None]) as mock_write, \
              patch("sys.stdout", captured):
+            mock_db.select.return_value = []
+            mock_db.insert.return_value = {}
             from orchestrator import eod
             eod(broker="simulation")
 
