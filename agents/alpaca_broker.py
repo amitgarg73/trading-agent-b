@@ -281,8 +281,18 @@ def _reconcile_with_alpaca() -> None:
         }
     except Exception as e:
         print(f"  ⚠️  Reconciliation: order fetch failed — {e}")
-        filled_buys  = set()
-        pending_buys = set()
+        from core import ledger, alerts, db
+        ledger.log("reconcile_failed", {"error": str(e)})
+        db.insert("b_scan_results", {
+            "date":      datetime.utcnow().date().isoformat(),
+            "scan_type": "reconcile_failed",
+            "results":   {"error": str(e), "ts": datetime.utcnow().isoformat()},
+        })
+        alerts.send_alert(
+            "Strategy B: Reconciliation Failed",
+            f"Order fetch exception: {e}\nCycle skipped — unfilled orders undetected this cycle.",
+        )
+        return
 
     for pos in positions:
         if pos["ticker"] in alpaca_tickers:

@@ -33,7 +33,7 @@ def _log_run_b(mode: str, status: str, details: dict | None = None) -> None:
 from config.settings import (
     TOTAL_CAPITAL, POSITION_SIZE_BY_CONFIDENCE,
     MAX_POSITIONS, DAILY_BONUS_TARGET, DAILY_LOSS_LIMIT,
-    INTRADAY_SCAN_UTC_START, INTRADAY_SCAN_UTC_END,
+    INTRADAY_SCAN_UTC_START, INTRADAY_SCAN_UTC_END, INTRADAY_ENTRY_CUTOFF_UTC,
     INTRADAY_SCAN_MAX_RUNS, INTRADAY_SCAN_MIN_INTERVAL_MINS,
     INTRADAY_TARGET_PCT, MIN_INTRADAY_MOVE_PCT,
     TARGET_PCT, MAX_LOSS_PER_TRADE,
@@ -125,6 +125,8 @@ def _maybe_run_intraday_scan(broker: str) -> None:
     """
     now_utc = datetime.utcnow()
     if not (INTRADAY_SCAN_UTC_START <= now_utc.hour < INTRADAY_SCAN_UTC_END):
+        return
+    if now_utc.hour >= INTRADAY_ENTRY_CUTOFF_UTC:
         return
 
     today = str(date.today())
