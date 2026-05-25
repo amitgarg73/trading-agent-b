@@ -46,7 +46,7 @@ jobs:
           else
             HOUR=$(date -u +%H)
             MIN=$(date -u +%M)
-            TIME=$((HOUR * 60 + MIN))
+            TIME=$((10#$HOUR * 60 + 10#$MIN))
             if [ $TIME -ge 840 ] && [ $TIME -lt 870 ]; then
               echo "mode=premarket" >> $GITHUB_OUTPUT
             elif [ $TIME -ge 1195 ]; then
