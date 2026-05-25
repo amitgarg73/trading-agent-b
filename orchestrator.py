@@ -11,9 +11,71 @@ from scanner.pool_filter import get_pool3_tickers, get_pool3_with_context
 from agents import strategy, risk, guardrails, market_context, news_intel, sector_guard
 from agents.alpaca_broker import place_orders, update_positions_intraday, close_all_positions, open_positions
 from agents.pool_scorer import score_today, write_daily_performance
-from core import db
+from core import db, ledger
 from core.alerts import send_alert
 from core.pool_manager import seed_pools_if_empty
+
+
+def _sweep_and_verify() -> bool:
+    """
+    Close overnight Alpaca positions with one retry and a verification step.
+    Returns True if Alpaca is clear after either attempt.
+    Returns False if positions remain after both — halt flag is set and alert sent.
+    """
+    import time
+    from agents.alpaca_broker import get_open_tickers as _get_open_tickers, _get as _alpaca_client
+
+    overnight = _get_open_tickers()
+    if not overnight:
+        return True
+
+    print(f"  ⚠️  OVERNIGHT POSITIONS DETECTED: {overnight}")
+    print("  Closing before day trading begins...")
+    try:
+        _alpaca_client().cancel_orders()
+    except Exception:
+        pass
+    close_all_positions(reason="OVERNIGHT_SWEEP")
+
+    time.sleep(10)
+    remaining = _get_open_tickers()
+    if not remaining:
+        print("  ✅ Morning sweep complete — Alpaca is clear.\n")
+        return True
+
+    print(f"  ⚠️  Positions still open after first sweep: {remaining} — retrying...")
+    close_all_positions(reason="OVERNIGHT_SWEEP")
+    time.sleep(10)
+    remaining = _get_open_tickers()
+    if not remaining:
+        print("  ✅ Cleared on second attempt.\n")
+        return True
+
+    tickers = sorted(remaining)
+    ledger.log("sweep_failed", {"tickers": tickers})
+    db.insert("b_scan_results", {
+        "date":      str(date.today()),
+        "scan_type": "halt_flag",
+        "results": {
+            "reason":     f"Morning sweep failed — positions still open: {tickers}",
+            "halted_at":  datetime.utcnow().isoformat(),
+            "halted_by":  "sweep_and_verify",
+            "positions_closed": [],
+        },
+    })
+    send_alert(
+        "STRATEGY B HALTED — Morning Sweep Failed",
+        f"Positions still open after 2 close attempts: {', '.join(tickers)}\n\n"
+        f"STEP 1 — Close positions manually in Alpaca:\n"
+        f"  https://app.alpaca.markets/paper/dashboard/overview\n"
+        f"  Find these tickers and close each one: {', '.join(tickers)}\n\n"
+        f"STEP 2 — Restart Strategy B:\n"
+        f"  https://github.com/amitgarg73/trading-agent-b/actions/workflows/restart.yml\n"
+        f"  Click 'Run workflow' then confirm.\n\n"
+        f"No new trades will open until you complete both steps.",
+    )
+    print(f"  ❌ Sweep failed after 2 attempts — premarket halted. Alert sent.")
+    return False
 
 
 def _log_run_b(mode: str, status: str, details: dict | None = None) -> None:
@@ -55,6 +117,10 @@ def _is_trading_day() -> bool:
 
 
 def _is_halted() -> bool:
+    halt_rows = db.select("b_scan_results", filters={"scan_type": "halt_flag"})
+    if halt_rows:
+        print("🛑 Strategy B halted — halt flag set")
+        return True
     rows = db.select("b_trade_plans", filters={"status": "HALTED"})
     if rows and rows[0].get("date") == str(date.today()):
         print("🛑 Strategy B halted for today")
@@ -301,17 +367,8 @@ def premarket(broker: str = "alpaca") -> None:
         return
 
     # Morning sweep — close any overnight Alpaca positions before trading begins
-    from agents.alpaca_broker import get_open_tickers as _get_open_tickers, _get as _alpaca_client
-    overnight = _get_open_tickers()
-    if overnight:
-        print(f"  ⚠️  OVERNIGHT POSITIONS DETECTED: {overnight}")
-        print(f"  Closing before day trading begins...\n")
-        try:
-            _alpaca_client().cancel_orders()
-        except Exception:
-            pass
-        swept = close_all_positions(reason="OVERNIGHT_SWEEP")
-        print(f"  Swept {len(swept)} overnight position(s). These will appear in today's Alpaca equity delta.\n")
+    if not _sweep_and_verify():
+        return
 
     seed_pools_if_empty()
 
