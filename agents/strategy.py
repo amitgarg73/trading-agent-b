@@ -147,7 +147,7 @@ def select_trades(candidates: list[dict], market_context: dict, pool3_context: l
     for attempt in range(1, 4):
         try:
             resp = client.messages.create(
-                model="claude-opus-4-7",
+                model="claude-sonnet-4-6",
                 max_tokens=2048,
                 system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
                 messages=[{"role": "user", "content": user_msg}],
