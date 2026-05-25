@@ -134,8 +134,9 @@ class TestRunLogging:
 class TestEODAlerts:
 
     def test_alert_sent_when_alpaca_positions_not_closed(self):
-        """Alert fires when Alpaca positions were open but EOD close returned nothing."""
+        """Alert fires when position was open before EOD and still open after close attempt."""
         open_pos = [{"ticker": "AAPL", "id": 1}]
+        # First db.select = dedup guard (no prior run); second = open_after check (still open)
         with patch("orchestrator.db") as mock_db, \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", return_value=open_pos), \
@@ -143,7 +144,7 @@ class TestEODAlerts:
              patch("orchestrator.score_today", return_value=_SCORE_RESULT), \
              patch("orchestrator.write_daily_performance"), \
              patch("orchestrator.send_alert") as mock_alert:
-            mock_db.select.return_value = []
+            mock_db.select.side_effect = [[], open_pos]
             mock_db.insert.return_value = {}
             from orchestrator import eod
             eod(broker="alpaca")
