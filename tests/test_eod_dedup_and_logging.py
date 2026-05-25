@@ -18,6 +18,7 @@ class TestEODDedup:
     def test_eod_skips_when_already_ran(self):
         """EOD bails early when run_eod_started record exists for today."""
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False):
             def _sel(table, **kw):
                 f = kw.get("filters", {})
@@ -33,6 +34,7 @@ class TestEODDedup:
     def test_eod_proceeds_when_no_prior_run(self):
         """EOD runs and logs run_eod_started when no prior run exists."""
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", return_value=[]), \
              patch("orchestrator.close_all_positions", return_value=[]), \
@@ -52,6 +54,7 @@ class TestEODDedup:
     def test_eod_dedup_query_exception_proceeds(self):
         """EOD proceeds gracefully if dedup query raises (table may not exist yet)."""
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", return_value=[]), \
              patch("orchestrator.close_all_positions", return_value=[]), \
@@ -96,6 +99,7 @@ class TestRunLogging:
     def test_eod_logs_completed_on_success(self):
         """EOD inserts run_eod_completed record after successful run."""
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", return_value=[]), \
              patch("orchestrator.close_all_positions", return_value=[]), \
@@ -114,6 +118,7 @@ class TestRunLogging:
     def test_eod_logs_failed_and_reraises_on_exception(self):
         """EOD inserts run_eod_failed and re-raises when an unexpected error occurs."""
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", side_effect=RuntimeError("boom")), \
              patch("orchestrator.send_alert"):
@@ -138,6 +143,7 @@ class TestEODAlerts:
         open_pos = [{"ticker": "AAPL", "id": 1}]
         # First db.select = dedup guard (no prior run); second = open_after check (still open)
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", return_value=open_pos), \
              patch("orchestrator.close_all_positions", return_value=[]), \
@@ -156,6 +162,7 @@ class TestEODAlerts:
         """No alert is sent when positions were closed successfully."""
         open_pos = [{"ticker": "AAPL", "id": 1}]
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", return_value=open_pos), \
              patch("orchestrator.close_all_positions", return_value=[{"ticker": "AAPL"}]), \
@@ -171,6 +178,7 @@ class TestEODAlerts:
     def test_alert_sent_on_eod_crash(self):
         """send_alert is called when the EOD run crashes with an unexpected exception."""
         with patch("orchestrator.db") as mock_db, \
+             patch("orchestrator._is_trading_day", return_value=True), \
              patch("orchestrator._is_halted", return_value=False), \
              patch("orchestrator.open_positions", side_effect=ValueError("unexpected")), \
              patch("orchestrator.send_alert") as mock_alert:

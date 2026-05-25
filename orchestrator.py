@@ -367,12 +367,12 @@ def premarket(broker: str = "alpaca") -> None:
         print(f"[orchestrator] {date.today()} is not a NYSE trading day — skipping")
         return
 
+    if _is_halted():
+        return
+
     existing = db.select("b_trade_plans", filters={"date": str(date.today())})
     if existing:
         print("[orchestrator] Premarket already ran today — skipping")
-        return
-
-    if _is_halted():
         return
 
     # Morning sweep — close any overnight Alpaca positions before trading begins
@@ -558,6 +558,9 @@ def eod(broker: str = "alpaca") -> None:
     print(f"  STRATEGY B — EOD — {datetime.now().strftime('%Y-%m-%d %H:%M ET')}")
     print(f"{'='*60}\n")
 
+    if not _is_trading_day():
+        print(f"[orchestrator] {date.today()} is not a NYSE trading day — skipping EOD")
+        return
     if _is_halted():
         return
 
