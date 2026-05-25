@@ -261,27 +261,32 @@ def _reconcile_with_alpaca() -> None:
     # manual trail/stop/target logic resolves P&L. Only mark UNFILLED when no buy
     # order ever filled or is pending — entry truly never executed.
     try:
+        from datetime import timezone
+        today_start = datetime.utcnow().replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc
+        )
         all_orders = _get().get_orders(
-            GetOrdersRequest(status=QueryOrderStatus.ALL, limit=100)
+            GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500, after=today_start)
         )
         today = datetime.utcnow().date().isoformat()
         filled_buys = {
             str(o.symbol)
             for o in all_orders
-            if str(o.side) == "buy"
-            and str(o.status) == "filled"
+            if getattr(o.side, "value", str(o.side)) == "buy"
+            and getattr(o.status, "value", str(o.status)) == "filled"
             and str(o.filled_at or o.submitted_at or "").startswith(today[:10])
         }
         pending_buys = {
             str(o.symbol)
             for o in all_orders
-            if str(o.side) == "buy"
-            and str(o.status) in ("pending_new", "accepted", "new", "held", "partially_filled")
+            if getattr(o.side, "value", str(o.side)) == "buy"
+            and getattr(o.status, "value", str(o.status)) in
+                ("pending_new", "accepted", "new", "held", "partially_filled")
             and str(o.submitted_at or "").startswith(today[:10])
         }
     except Exception as e:
         print(f"  ⚠️  Reconciliation: order fetch failed — {e}")
-        from core import ledger, alerts, db
+        from core import ledger, alerts
         ledger.log("reconcile_failed", {"error": str(e)})
         db.insert("b_scan_results", {
             "date":      datetime.utcnow().date().isoformat(),
@@ -442,13 +447,22 @@ def close_all_positions(reason: str = "EOD") -> list[dict]:
         _close_position(pos, price, reason)
         closed.append(pos["ticker"])
 
-    # Safety sweep: close any Alpaca positions orphaned (filled but never tracked in DB)
+    # Safety sweep: close Strategy B orphans only (in Alpaca but not in our DB).
+    # Filters by STRATEGY_TAG prefix so we never close Strategy A's positions.
     db_tickers = {p["ticker"] for p in positions}
     try:
         broker = _get()
-        broker.cancel_orders_for_symbol  # check connection
+        from datetime import timezone, timedelta
+        two_days_ago = (datetime.utcnow() - timedelta(days=2)).replace(tzinfo=timezone.utc)
+        recent = broker.get_orders(GetOrdersRequest(
+            status=QueryOrderStatus.ALL, limit=500, after=two_days_ago
+        ))
+        our_tickers = {
+            str(o.symbol) for o in recent
+            if str(o.client_order_id or "").startswith(f"strat{STRATEGY_TAG}_")
+        }
         for ap in broker.get_all_positions():
-            if ap.symbol not in db_tickers:
+            if ap.symbol not in db_tickers and ap.symbol in our_tickers:
                 print(f"[alpaca] Orphan sweep closing {ap.symbol} ({ap.qty} shares)")
                 try:
                     broker.close_position(ap.symbol)

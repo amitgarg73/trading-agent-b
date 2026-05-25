@@ -21,6 +21,9 @@ def _sweep_and_verify() -> bool:
     Close overnight Alpaca positions with one retry and a verification step.
     Returns True if Alpaca is clear after either attempt.
     Returns False if positions remain after both — halt flag is set and alert sent.
+
+    Only acts on positions tracked in our DB as OPEN — skips Strategy A's positions
+    on the shared Alpaca account.
     """
     import time
     from agents.alpaca_broker import get_open_tickers as _get_open_tickers, _get as _alpaca_client
@@ -29,7 +32,13 @@ def _sweep_and_verify() -> bool:
     if not overnight:
         return True
 
-    print(f"  ⚠️  OVERNIGHT POSITIONS DETECTED: {overnight}")
+    # Cross-strategy guard: only act on positions we opened (in our DB as OPEN)
+    our_open = {p["ticker"] for p in open_positions()}
+    ours_overnight = overnight & our_open
+    if not ours_overnight:
+        return True
+
+    print(f"  ⚠️  OVERNIGHT POSITIONS DETECTED: {ours_overnight}")
     print("  Closing before day trading begins...")
     try:
         _alpaca_client().cancel_orders()
@@ -38,7 +47,7 @@ def _sweep_and_verify() -> bool:
     close_all_positions(reason="OVERNIGHT_SWEEP")
 
     time.sleep(10)
-    remaining = _get_open_tickers()
+    remaining = _get_open_tickers() & our_open
     if not remaining:
         print("  ✅ Morning sweep complete — Alpaca is clear.\n")
         return True
@@ -46,7 +55,7 @@ def _sweep_and_verify() -> bool:
     print(f"  ⚠️  Positions still open after first sweep: {remaining} — retrying...")
     close_all_positions(reason="OVERNIGHT_SWEEP")
     time.sleep(10)
-    remaining = _get_open_tickers()
+    remaining = _get_open_tickers() & our_open
     if not remaining:
         print("  ✅ Cleared on second attempt.\n")
         return True
@@ -575,14 +584,17 @@ def eod(broker: str = "alpaca") -> None:
             print("    Simulation mode — skipping close")
             closed = []
 
-        # Alert if positions were open but nothing got closed
-        if broker == "alpaca" and open_before and len(closed) == 0:
-            still_open = [p["ticker"] for p in open_before]
-            send_alert(
-                f"[Trading Agent B] EOD close FAILED — {len(still_open)} position(s) still open",
-                f"Date: {today_iso}\nStill open: {still_open}\n"
-                f"These positions will carry overnight. Manual close required.",
-            )
+        # Alert if any position that was open before EOD is still open after close
+        if broker == "alpaca" and open_before:
+            open_before_ids = {p["id"] for p in open_before}
+            open_after = db.select("b_positions", filters={"status": "OPEN"})
+            still_open = [p["ticker"] for p in open_after if p["id"] in open_before_ids]
+            if still_open:
+                send_alert(
+                    f"[Trading Agent B] EOD close FAILED — {len(still_open)} position(s) still open",
+                    f"Date: {today_iso}\nStill open: {still_open}\n"
+                    f"These positions will carry overnight. Manual close required.",
+                )
 
         print("\n[2] Running pool scorer...")
         try:
