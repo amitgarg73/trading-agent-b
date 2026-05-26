@@ -3,9 +3,12 @@ from __future__ import annotations
 from unittest.mock import patch, MagicMock
 import pytest
 from scanner import intraday_momentum
-from config.settings import SCORE_THRESHOLD, MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT
+from config.settings import SCORE_THRESHOLD, MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT, STRONG_SECTOR_THRESHOLD
 
-SPY_UP = {"today_pct_change": 0.5, "above_vwap": True, "rs_vs_spy": None, "vwap": 550.0}
+SPY_UP   = {"today_pct_change": 0.5,  "above_vwap": True,  "rs_vs_spy": None, "vwap": 550.0}
+SPY_DOWN = {"today_pct_change": -0.5, "above_vwap": False, "rs_vs_spy": None, "vwap": 550.0}
+XLK_HOT  = {"today_pct_change": STRONG_SECTOR_THRESHOLD + 1.0, "above_vwap": True, "rs_vs_spy": None, "vwap": 200.0}
+XLK_FLAT = {"today_pct_change": 0.1,  "above_vwap": True,  "rs_vs_spy": None, "vwap": 200.0}
 
 
 # ---------------------------------------------------------------------------
@@ -59,13 +62,41 @@ def test_scan_alpaca_returns_candidates_above_threshold():
     assert result[0]["signal_type"] == "INTRADAY_MOMENTUM"
 
 
-def test_scan_alpaca_spy_gate_blocks_when_market_down():
+def test_scan_alpaca_spy_gate_blocks_when_market_and_sectors_down():
+    # SPY negative AND all sector ETFs flat — both gates fail
     signals = {
-        "SPY":  {"today_pct_change": -0.5, "above_vwap": False, "rs_vs_spy": None, "vwap": 550.0},
+        "SPY":  SPY_DOWN,
         "AAPL": {"today_pct_change": 1.0, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0},
     }
     with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
          patch("agents.alpaca_broker.get_live_prices", return_value={}):
+        result = intraday_momentum.scan_alpaca(["AAPL"])
+    assert result == []
+
+
+def test_scan_alpaca_sector_override_passes_when_spy_negative():
+    # SPY negative but XLK strongly up — sector gate overrides, AAPL candidate passes
+    signals = {
+        "SPY":  SPY_DOWN,
+        "XLK":  XLK_HOT,
+        "AAPL": {"today_pct_change": 2.0, "above_vwap": True, "rs_vs_spy": 1.5, "vwap": 180.0},
+    }
+    with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
+         patch("agents.alpaca_broker.get_live_prices", return_value={"AAPL": 182.0}):
+        result = intraday_momentum.scan_alpaca(["AAPL"])
+    assert len(result) == 1
+    assert result[0]["ticker"] == "AAPL"
+
+
+def test_scan_alpaca_sector_below_threshold_does_not_override():
+    # SPY negative AND XLK only barely up — sector gate not met
+    signals = {
+        "SPY":  SPY_DOWN,
+        "XLK":  XLK_FLAT,
+        "AAPL": {"today_pct_change": 2.0, "above_vwap": True, "rs_vs_spy": 1.5, "vwap": 180.0},
+    }
+    with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
+         patch("agents.alpaca_broker.get_live_prices", return_value={"AAPL": 182.0}):
         result = intraday_momentum.scan_alpaca(["AAPL"])
     assert result == []
 

@@ -1,15 +1,19 @@
 """
 Intraday scanner — Option 2 market-participation signal for blue chips.
 
-Trigger: SPY up >= MIN_SPY_MOVE_PCT AND stock above VWAP AND stock up >= MIN_INTRADAY_MOVE_PCT (0.5%).
-This catches blue chips participating in a genuine up-market day rather than
-waiting for individual stock momentum spikes (rare for large caps).
+Trigger: (SPY up >= MIN_SPY_MOVE_PCT OR sector ETF up >= STRONG_SECTOR_THRESHOLD)
+         AND stock above VWAP AND stock up >= MIN_INTRADAY_MOVE_PCT (0.5%).
+On rotation days (e.g. semis +6%, SPY flat) the sector gate overrides SPY so
+Pool 3 tech/semi names still get scanned.
 
-Alpaca mode: snapshot API (today_pct_change, above_vwap, rs_vs_spy) + SPY gate.
+Alpaca mode: snapshot API (today_pct_change, above_vwap, rs_vs_spy) + SPY/sector gate.
 Simulation mode: yfinance 5-min data. No SPY gate (used for dev/backtest).
 """
 from __future__ import annotations
-from config.settings import MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT, SCORE_THRESHOLD
+from config.settings import MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT, SCORE_THRESHOLD, STRONG_SECTOR_THRESHOLD
+
+# Sector ETFs to check as SPY-gate override
+_SECTOR_ETFS = ["XLK", "XLF", "XLV", "XLY", "XLE", "XLI"]
 
 
 def _momentum_score(pct_change: float, rs_vs_spy: float | None) -> int:
@@ -28,24 +32,37 @@ def _momentum_score(pct_change: float, rs_vs_spy: float | None) -> int:
 def scan_alpaca(universe: list[str]) -> list[dict]:
     """
     Option 2 market-participation scan via Alpaca snapshot API.
-    Gate 1: SPY must be up >= MIN_SPY_MOVE_PCT — confirms market is genuinely up.
+    Gate 1: SPY >= MIN_SPY_MOVE_PCT OR any sector ETF >= STRONG_SECTOR_THRESHOLD.
+            Sector override catches rotation days (e.g. semis +6%, SPY flat).
     Gate 2: stock above VWAP AND up >= MIN_INTRADAY_MOVE_PCT (0.5%) — confirms participation.
     """
     from agents import alpaca_broker
 
-    # Include SPY so we can check market direction
-    signals = alpaca_broker.get_intraday_signals(list(set(universe + ["SPY"])))
-    live    = alpaca_broker.get_live_prices([t for t in signals if t != "SPY"])
+    # Include SPY + sector ETFs for gate check
+    fetch = list(set(universe + ["SPY"] + _SECTOR_ETFS))
+    signals = alpaca_broker.get_intraday_signals(fetch)
+    live    = alpaca_broker.get_live_prices([t for t in signals if t not in {"SPY"} | set(_SECTOR_ETFS)])
 
-    # SPY gate — market must be up
-    spy_pct = (signals.get("SPY") or {}).get("today_pct_change") or 0
-    if spy_pct < MIN_SPY_MOVE_PCT:
-        print(f"        [intraday-b] SPY +{spy_pct:.2f}% — market gate not met (need +{MIN_SPY_MOVE_PCT}%)")
+    # Gate: SPY positive OR any sector ETF up strongly (rotation day)
+    spy_pct     = (signals.get("SPY") or {}).get("today_pct_change") or 0
+    sector_pcts = {etf: (signals.get(etf) or {}).get("today_pct_change") or 0 for etf in _SECTOR_ETFS}
+    best_sector = max(sector_pcts.values()) if sector_pcts else 0
+    best_etf    = max(sector_pcts, key=sector_pcts.get) if sector_pcts else ""
+
+    spy_ok    = spy_pct >= MIN_SPY_MOVE_PCT
+    sector_ok = best_sector >= STRONG_SECTOR_THRESHOLD
+
+    if not spy_ok and not sector_ok:
+        print(f"        [intraday-b] SPY {spy_pct:+.2f}%, best sector {best_etf} {best_sector:+.2f}% "
+              f"— market gate not met (SPY need {MIN_SPY_MOVE_PCT:+.1f}% or sector need +{STRONG_SECTOR_THRESHOLD:.1f}%)")
         return []
+
+    if sector_ok and not spy_ok:
+        print(f"        [intraday-b] SPY {spy_pct:+.2f}% — gate overridden by {best_etf} {best_sector:+.2f}%")
 
     candidates = []
     for ticker, sig in signals.items():
-        if ticker == "SPY":
+        if ticker in {"SPY"} | set(_SECTOR_ETFS):
             continue
         pct        = sig.get("today_pct_change") or 0
         above_vwap = sig.get("above_vwap", False)

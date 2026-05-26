@@ -72,6 +72,7 @@ INTRADAY_SCAN_MIN_INTERVAL_MINS = 55   # ~1 hr apart (55 min absorbs GH Actions 
 INTRADAY_TARGET_PCT             = 0.01
 MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal)
 MIN_SPY_MOVE_PCT                = 0.0   # SPY must not be negative — blocks down market days only
+STRONG_SECTOR_THRESHOLD         = 2.0   # sector ETF up >= this % overrides SPY gate on rotation days
 
 # Pool system thresholds
 POOL_PROMOTION_SCORE   = 6.0    # 7-day rolling score to promote Pool 1 → Pool 2
