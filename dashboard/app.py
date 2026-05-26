@@ -28,6 +28,8 @@ from config.blue_chips import POOL_2_SEED, SECTOR_MAP
 
 st.set_page_config(page_title="Trading Agent B", page_icon="📊", layout="wide")
 
+st.markdown("<style>h3 { color: #FAFAFA !important; }</style>", unsafe_allow_html=True)
+
 # --- Auth ---
 def _check_password() -> bool:
     if st.session_state.get("authenticated"):
