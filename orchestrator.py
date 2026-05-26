@@ -477,35 +477,34 @@ def premarket(broker: str = "alpaca") -> None:
         print(f"🛑 No trades placed — {halt_reason}")
         return
 
-    # 7. Save plan
+    # 7. Save plan — always write so intraday guard doesn't block on 0-trade premarket
     plan_id = None
-    if final or trades:
-        plan_row = db.insert("b_trade_plans", {
-            "date":                   str(date.today()),
-            "market_context":         str(mkt),
-            "pool3_tickers":          pool3_tickers,
-            "total_estimated_profit": sum(t.get("estimated_profit", 0) for t in final),
-            "risk_note":              f"Rejected: {risk_rejected + guard_rejected}",
-            "status":                 "ACTIVE",
-        })
-        plan_id = plan_row["id"]
+    plan_row = db.insert("b_trade_plans", {
+        "date":                   str(date.today()),
+        "market_context":         str(mkt),
+        "pool3_tickers":          pool3_tickers,
+        "total_estimated_profit": sum(t.get("estimated_profit", 0) for t in final),
+        "risk_note":              f"Rejected: {risk_rejected + guard_rejected}",
+        "status":                 "ACTIVE" if (final or trades) else "NO_TRADES",
+    })
+    plan_id = plan_row["id"]
 
-        for t in final:
-            db.insert("b_planned_trades", {
-                "plan_id":          plan_id,
-                "ticker":           t["ticker"],
-                "pool":             t.get("pool", 2),
-                "action":           t["action"],
-                "entry_price":      t["entry_price"],
-                "target_price":     t["target_price"],
-                "stop_loss":        t["stop_loss"],
-                "position_size":    t["position_size"],
-                "shares":           t["shares"],
-                "estimated_profit": t.get("estimated_profit"),
-                "confidence":       t["confidence"],
-                "reasoning":        t.get("reasoning", ""),
-                "status":           "PLANNED",
-            })
+    for t in final:
+        db.insert("b_planned_trades", {
+            "plan_id":          plan_id,
+            "ticker":           t["ticker"],
+            "pool":             t.get("pool", 2),
+            "action":           t["action"],
+            "entry_price":      t["entry_price"],
+            "target_price":     t["target_price"],
+            "stop_loss":        t["stop_loss"],
+            "position_size":    t["position_size"],
+            "shares":           t["shares"],
+            "estimated_profit": t.get("estimated_profit"),
+            "confidence":       t["confidence"],
+            "reasoning":        t.get("reasoning", ""),
+            "status":           "PLANNED",
+        })
 
     # 8. Place orders
     run_row = db.insert("b_daily_runs", {
