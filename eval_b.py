@@ -27,7 +27,8 @@ PASS_WIN_RATE       = 60.0   # 60% trade win rate
 PASS_GRADE          = "A"    # Score >= 80
 
 
-def _compute_metrics(perf_rows: list[dict], positions: list[dict]) -> dict:
+def _compute_metrics(perf_rows: list[dict], positions: list[dict],
+                     planned_trades: list[dict] | None = None) -> dict:
     """
     Compute all scorecard metrics from b_daily_performance (total rows) + b_positions.
     Returns empty dict if no data.
@@ -85,7 +86,7 @@ def _compute_metrics(perf_rows: list[dict], positions: list[dict]) -> dict:
                    and str(p.get("date") or "")[:10] != today_iso]
     # Duplicate ticker same day — real guardrail failures only.
     # Partial profit splits open Leg A + Leg B for the same ticker under the same plan_id.
-    all_pt     = db.select("b_planned_trades")
+    all_pt     = planned_trades if planned_trades is not None else []
     pt_to_plan = {pt["id"]: pt.get("plan_id") for pt in all_pt}
     ticker_day_plans: dict[tuple, set] = {}
     for p in closed:
@@ -193,6 +194,7 @@ def _gate_check(ev: dict) -> tuple[bool, list[str], list[str]]:
 def run_eval(days: int | None = 14, write: bool = False) -> dict:
     all_perf = db.select("b_daily_performance", order="date")
     all_pos  = db.select("b_positions")
+    all_pt   = db.select("b_planned_trades")
 
     if days:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
@@ -204,7 +206,7 @@ def run_eval(days: int | None = 14, write: bool = False) -> dict:
                    if str(p.get("date") or p.get("closed_at") or "")[:10] in eval_dates
                    or p.get("status") == "OPEN"]
 
-    ev = _compute_metrics(all_perf, all_pos)
+    ev = _compute_metrics(all_perf, all_pos, planned_trades=all_pt)
     if not ev:
         print("No performance data found.")
         return {}
