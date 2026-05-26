@@ -414,6 +414,16 @@ def premarket(broker: str = "alpaca") -> None:
     candidates = run_scan(pool3_tickers, skip_volume_surge=True)
     print(f"    {len(candidates)} candidates after scan")
 
+    # Fallback: pool_filter already curated these names — if scanner finds no momentum
+    # signal (common for blue chips on quiet days), pass pool_filter candidates directly
+    # so Claude can still make selections. ATR sizer will use formula stops (no atr_pct).
+    if not candidates:
+        candidates = [
+            {**c, "technical_score": 0, "signals": ["pool3_fallback"]}
+            for c in pool3_context
+        ]
+        print(f"    No scanner signals → using {len(candidates)} pool_filter candidates (fallback)")
+
     # 3.5 Earnings blackout + news intelligence
     ni_result   = news_intel.run(candidates)
     candidates  = ni_result["filtered_candidates"]
@@ -421,7 +431,7 @@ def premarket(broker: str = "alpaca") -> None:
     if ni_result["blackout_tickers"]:
         print(f"    Blackout: {[b['ticker'] for b in ni_result['blackout_tickers']]}")
     if not candidates:
-        print("[orchestrator] All candidates blocked by earnings blackout")
+        print("[orchestrator] No candidates to trade")
         return
 
     # 4. Claude selects trades
