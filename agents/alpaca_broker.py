@@ -70,6 +70,44 @@ def get_live_prices(tickers: list[str]) -> dict[str, float]:
         return {}
 
 
+def get_live_quotes(tickers: list[str]) -> dict[str, dict]:
+    """Return {ticker: {"ask": float, "bid": float}} for order-time pricing."""
+    if not tickers:
+        return {}
+    try:
+        from alpaca.data.requests import StockLatestQuoteRequest
+        quotes = _dclient().get_stock_latest_quote(
+            StockLatestQuoteRequest(symbol_or_symbols=tickers)
+        )
+        result = {}
+        for ticker, quote in quotes.items():
+            ask = getattr(quote, "ask_price", None)
+            bid = getattr(quote, "bid_price", None)
+            if ask and bid and float(ask) > 0 and float(bid) > 0:
+                result[ticker] = {"ask": round(float(ask), 4), "bid": round(float(bid), 4)}
+        return result
+    except Exception as e:
+        print(f"        ⚠️  Live quote fetch failed: {e}")
+        return {}
+
+
+def hybrid_limit_price(ask: float, bid: float) -> float | None:
+    """
+    Best limit price for a BUY given current bid/ask spread.
+      spread < 0.10%  → mid-price: tight market, passive fill likely within seconds
+      spread 0.10–0.20% → ask: moderate spread, don't risk missing the move
+      spread > 0.20%  → None (skip): spread alone destroys R:R before entry
+    """
+    if ask <= 0 or bid <= 0 or ask < bid:
+        return round(ask, 2) if ask > 0 else None
+    spread_pct = (ask - bid) / ask
+    if spread_pct > 0.002:
+        return None
+    if spread_pct < 0.001:
+        return round((ask + bid) / 2, 2)
+    return round(ask, 2)
+
+
 def get_intraday_signals(tickers: list[str]) -> dict[str, dict]:
     """
     Fetch intraday signals via Alpaca snapshot API.
@@ -137,7 +175,7 @@ def get_current_price(ticker: str) -> float | None:
 
 
 def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
-    """Place market buy orders for approved trades. Returns list with order_ids."""
+    """Place limit buy orders for approved trades. Returns list with order_ids."""
     broker  = _get()
     placed  = []
 
@@ -147,20 +185,43 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
         pool   = trade.get("pool", 2)
 
         try:
-            target_price = round(float(trade["target_price"]), 2)
-            stop_price   = round(float(trade["stop_loss"]), 2)
-            req = MarketOrderRequest(
+            # Fetch live bid/ask at submission time and compute best limit price.
+            # Tight spread (<0.1%) → mid saves half the spread; wide (>0.2%) → skip.
+            qt = get_live_quotes([ticker]).get(ticker)
+            plan_ask = float(trade["entry_price"])
+            if qt:
+                limit_px = hybrid_limit_price(qt["ask"], qt["bid"])
+                if limit_px is None:
+                    spread_pct = (qt["ask"] - qt["bid"]) / qt["ask"] * 100
+                    print(f"[alpaca] {ticker} wide spread {spread_pct:.2f}% — skipping")
+                    continue
+                # Anchor stop/target to the live limit price (not the stale plan price).
+                plan_stop_pct   = (trade["entry_price"] - float(trade["stop_loss"]))   / trade["entry_price"]
+                plan_target_pct = (float(trade["target_price"]) - trade["entry_price"]) / trade["entry_price"]
+                entry_price  = limit_px
+                stop_price   = round(limit_px * (1 - plan_stop_pct), 2)
+                target_price = round(limit_px * (1 + plan_target_pct), 2)
+                if limit_px < qt["ask"]:
+                    saved = round((qt["ask"] - limit_px) * shares, 2)
+                    print(f"[alpaca] {ticker} mid-price limit: ask={qt['ask']:.2f} limit={limit_px:.2f} saves ~${saved:.2f}")
+            else:
+                entry_price  = round(plan_ask, 2)
+                stop_price   = round(float(trade["stop_loss"]), 2)
+                target_price = round(float(trade["target_price"]), 2)
+
+            req = LimitOrderRequest(
                 symbol=ticker,
                 qty=shares,
                 side=OrderSide.BUY,
                 time_in_force=TimeInForce.DAY,
+                limit_price=entry_price,
                 order_class=OrderClass.BRACKET,
                 take_profit=TakeProfitRequest(limit_price=target_price),
                 stop_loss=StopLossRequest(stop_price=stop_price),
                 client_order_id=_order_id(ticker),
             )
             order = broker.submit_order(req)
-            print(f"[alpaca] BUY {shares} {ticker} @ market bracket → target={target_price} stop={stop_price} (pool {pool}) — order {order.id}")
+            print(f"[alpaca] BUY {shares} {ticker} @ limit {entry_price} → target={target_price} stop={stop_price} (pool {pool}) — order {order.id}")
 
             # Verify order filled (not cancelled/rejected) before writing to DB
             fill_price     = None
@@ -184,12 +245,11 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                 print(f"[alpaca] {ticker} — could not confirm fill after 15s, skipping DB write")
                 continue  # don't write a phantom position
 
-            planned_entry = float(trade["entry_price"])
             if fill_price:
-                slippage_bps = round(abs(fill_price - planned_entry) / planned_entry * 10_000, 1)
-                print(f"[alpaca] {ticker} fill=${fill_price:.2f} planned=${planned_entry:.2f} slip={slippage_bps}bps")
+                slippage_bps = round(abs(fill_price - entry_price) / entry_price * 10_000, 1)
+                print(f"[alpaca] {ticker} fill=${fill_price:.2f} limit=${entry_price:.2f} slip={slippage_bps}bps")
             else:
-                fill_price = planned_entry
+                fill_price = entry_price
 
             trail_order_id = None
             if USE_NATIVE_TRAILING_STOP:
@@ -203,10 +263,10 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                 "ticker":          ticker,
                 "pool":            pool,
                 "action":          "BUY",
-                "entry_price":     planned_entry,
+                "entry_price":     entry_price,
                 "fill_price":      fill_price,
-                "target_price":    trade["target_price"],
-                "stop_loss":       trade["stop_loss"],
+                "target_price":    target_price,
+                "stop_loss":       stop_price,
                 "shares":          shares,
                 "position_size":   trade["position_size"],
                 "status":          "OPEN",

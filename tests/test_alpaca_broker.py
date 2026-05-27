@@ -524,16 +524,20 @@ def test_close_position_no_order_id_skips_cancel(mock_get, mock_update):
 
 # ── place_orders uses stop_price not trail_percent ────────────────────────────
 
+@patch("agents.alpaca_broker.get_live_quotes")
 @patch("agents.alpaca_broker._get")
-def test_place_orders_uses_stop_price_not_trail_percent(mock_get):
-    """place_orders must pass stop_price to StopLossRequest — trail_percent is invalid and causes API rejection."""
+def test_place_orders_uses_limit_order_with_stop_price(mock_get, mock_quotes):
+    """place_orders must use LimitOrderRequest + StopLossRequest(stop_price) — not market order or trail_percent."""
     from unittest.mock import MagicMock
+    from alpaca.trading.requests import LimitOrderRequest, StopLossRequest
     import agents.alpaca_broker as broker_mod
+
+    mock_quotes.return_value = {"AAPL": {"ask": 150.10, "bid": 150.00}}  # tight spread → mid
 
     filled = MagicMock()
     filled.id = "ord-123"
     filled.status = "filled"
-    filled.filled_avg_price = 150.0
+    filled.filled_avg_price = 150.05
 
     mock_broker = mock_get.return_value
     mock_broker.submit_order.return_value = MagicMock(id="ord-123")
@@ -549,12 +553,67 @@ def test_place_orders_uses_stop_price_not_trail_percent(mock_get):
         mock_db.insert.return_value = None
         broker_mod.place_orders([trade])
 
-    from alpaca.trading.requests import StopLossRequest
-    # First submit_order call is the bracket; second is the trailing stop.
+    # First submit_order is the bracket order
     bracket_req = mock_broker.submit_order.call_args_list[0][0][0]
+    assert isinstance(bracket_req, LimitOrderRequest)
+    # Mid price of ask=150.10, bid=150.00 → 150.05
+    assert bracket_req.limit_price == pytest.approx(150.05, abs=0.01)
     stop_req = bracket_req.stop_loss
     assert isinstance(stop_req, StopLossRequest)
-    assert stop_req.stop_price == pytest.approx(147.0)
+    assert stop_req.stop_price is not None
     assert not hasattr(stop_req, "trail_percent") or stop_req.trail_percent is None
-    # Second call is the trailing stop (not a bracket)
+    # Second submit_order call is the trailing stop
     assert mock_broker.submit_order.call_count == 2
+
+
+@patch("agents.alpaca_broker.get_live_quotes")
+@patch("agents.alpaca_broker._get")
+def test_place_orders_skips_wide_spread(mock_get, mock_quotes):
+    """place_orders must skip tickers where bid/ask spread exceeds 0.20%."""
+    import agents.alpaca_broker as broker_mod
+
+    mock_quotes.return_value = {"AAPL": {"ask": 150.50, "bid": 150.00}}  # 0.33% spread → skip
+
+    mock_broker = mock_get.return_value
+
+    trade = {
+        "ticker": "AAPL", "shares": 10, "pool": 2, "action": "BUY",
+        "entry_price": 150.0, "target_price": 156.0, "stop_loss": 147.0,
+        "position_size": 1500, "confidence": "MEDIUM",
+    }
+
+    with patch("agents.alpaca_broker.db") as mock_db:
+        result = broker_mod.place_orders([trade])
+
+    assert result == []
+    mock_broker.submit_order.assert_not_called()
+
+
+# ── hybrid_limit_price ────────────────────────────────────────────────────────
+
+from agents.alpaca_broker import hybrid_limit_price
+
+def test_hybrid_tight_spread_returns_mid():
+    """Spread < 0.10% → mid-price."""
+    ask, bid = 100.10, 100.00
+    result = hybrid_limit_price(ask, bid)
+    assert result == round((ask + bid) / 2, 2)
+
+def test_hybrid_moderate_spread_returns_ask():
+    """Spread 0.10–0.20% → ask price."""
+    ask, bid = 100.15, 100.00
+    result = hybrid_limit_price(ask, bid)
+    assert result == round(ask, 2)
+
+def test_hybrid_wide_spread_returns_none():
+    """Spread > 0.20% → None (skip)."""
+    ask, bid = 100.30, 100.00
+    result = hybrid_limit_price(ask, bid)
+    assert result is None
+
+def test_hybrid_zero_ask_returns_none():
+    assert hybrid_limit_price(0.0, 99.0) is None
+
+def test_hybrid_ask_less_than_bid_returns_ask():
+    result = hybrid_limit_price(99.0, 100.0)
+    assert result == round(99.0, 2)
