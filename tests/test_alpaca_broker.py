@@ -532,7 +532,7 @@ def test_place_orders_uses_limit_order_with_stop_price(mock_get, mock_quotes):
     from alpaca.trading.requests import LimitOrderRequest, StopLossRequest
     import agents.alpaca_broker as broker_mod
 
-    mock_quotes.return_value = {"AAPL": {"ask": 150.10, "bid": 150.00}}  # tight spread → mid
+    mock_quotes.return_value = {"AAPL": {"ask": 150.10, "bid": 150.00}}  # tight spread → bid
 
     filled = MagicMock()
     filled.id = "ord-123"
@@ -556,8 +556,8 @@ def test_place_orders_uses_limit_order_with_stop_price(mock_get, mock_quotes):
     # First submit_order is the bracket order
     bracket_req = mock_broker.submit_order.call_args_list[0][0][0]
     assert isinstance(bracket_req, LimitOrderRequest)
-    # Mid price of ask=150.10, bid=150.00 → 150.05
-    assert bracket_req.limit_price == pytest.approx(150.05, abs=0.01)
+    # Bid price of ask=150.10, bid=150.00 → 150.00 (tight spread → bid, passive-first)
+    assert bracket_req.limit_price == pytest.approx(150.00, abs=0.01)
     stop_req = bracket_req.stop_loss
     assert isinstance(stop_req, StopLossRequest)
     assert stop_req.stop_price is not None
@@ -593,17 +593,17 @@ def test_place_orders_skips_wide_spread(mock_get, mock_quotes):
 
 from agents.alpaca_broker import hybrid_limit_price
 
-def test_hybrid_tight_spread_returns_mid():
-    """Spread < 0.10% → mid-price."""
+def test_hybrid_tight_spread_returns_bid():
+    """Spread < 0.10% → bid (passive fill, stock dips to us)."""
     ask, bid = 100.10, 100.00
     result = hybrid_limit_price(ask, bid)
-    assert result == round((ask + bid) / 2, 2)
+    assert result == round(bid, 2)
 
-def test_hybrid_moderate_spread_returns_ask():
-    """Spread 0.10–0.20% → ask price."""
+def test_hybrid_moderate_spread_returns_mid():
+    """Spread 0.10–0.20% → mid (was ask — shifted one tier lower)."""
     ask, bid = 100.15, 100.00
     result = hybrid_limit_price(ask, bid)
-    assert result == round(ask, 2)
+    assert result == round((ask + bid) / 2, 2)
 
 def test_hybrid_wide_spread_returns_none():
     """Spread > 0.20% → None (skip)."""

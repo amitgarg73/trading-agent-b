@@ -93,10 +93,12 @@ def get_live_quotes(tickers: list[str]) -> dict[str, dict]:
 
 def hybrid_limit_price(ask: float, bid: float) -> float | None:
     """
-    Best limit price for a BUY given current bid/ask spread.
-      spread < 0.10%  → mid-price: tight market, passive fill likely within seconds
-      spread 0.10–0.20% → ask: moderate spread, don't risk missing the move
-      spread > 0.20%  → None (skip): spread alone destroys R:R before entry
+    Passive-first limit price for a BUY — set below the current ask so the
+    stock has to come to us rather than us chasing it.
+
+      spread < 0.10%  → bid: ultra-tight market, fills within seconds on any normal tick
+      spread 0.10–0.20% → mid: moderate spread, mid fills on normal intraday dips
+      spread > 0.20%  → None (skip): spread destroys R:R before entry
     """
     if ask <= 0 or bid <= 0 or ask < bid:
         return round(ask, 2) if ask > 0 else None
@@ -104,8 +106,8 @@ def hybrid_limit_price(ask: float, bid: float) -> float | None:
     if spread_pct > 0.002:
         return None
     if spread_pct < 0.001:
-        return round((ask + bid) / 2, 2)
-    return round(ask, 2)
+        return round(bid, 2)                    # was mid — now bid
+    return round((ask + bid) / 2, 2)            # was ask — now mid
 
 
 def get_intraday_signals(tickers: list[str]) -> dict[str, dict]:
