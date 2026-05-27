@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v1.9 · **Updated:** 2026-05-26
+**Version:** v2.0 · **Updated:** 2026-05-27
 
 ---
 
@@ -156,6 +156,8 @@ Runs once before significant intraday volume develops. Pool Filter runs first to
 | **2. Behavioral Scan** | Scanner | Scores Pool 3 stocks: VWAP respect, ATR alignment, volume patterns, RSI, MACD, SMA20/50. Returns `behavioral_score` per stock. |
 | **3. News Filter** | News Intel | Removes earnings-day tickers. Adds news sentiment context to market summary. |
 | **4. Market Context** | Market Context | Fetches VIX, Fear & Greed, US futures, economic calendar, and sector rotation (11 ETFs). Sets `max_positions` and `quiet_day`. Hard skip if futures < −1.5%. |
+| **4.5 SPY Gate** | orchestrator | Checks SPY `today_pct_change`. If negative, skips the day entirely (harder gate than Strategy A which only reduces max_positions). |
+| **4.6 Candidate Cap** | orchestrator | Sorts candidates by technical score descending; retains top `MAX_DAILY_ENTRIES` (10) before the Claude call. |
 | **5. Strategy (Claude)** | Strategy Agent | claude-opus-4-7 receives Pool 3 candidates with full behavioral context. Selects trades, assigns confidence, sets entry/target/stop using fixed formulas. Writes reasoning. |
 | **6. Risk Validation** | Risk Agent | Enforces R:R ≥ 2.0, position size bounds, max loss per trade. |
 | **7. Sector Guard** | Sector Guard | Caps exposure at sector concentration limit. |
@@ -171,7 +173,8 @@ Runs once before significant intraday volume develops. Pool Filter runs first to
 - Lock-in logic: Tier 1 ($500 realized) — let winners ride; Tier 2 ($700 total) — close everything
 
 **Momentum Scan (conditional, max 6/day, min 90 min apart):**
-- SPY gate: SPY must be up ≥+0.5% at scan time
+- **Orchestrator SPY gate:** SPY `today_pct_change` must be >= `MIN_SPY_MOVE_PCT` (0.3%) to proceed — checked before momentum scanner runs.
+- **Momentum scanner SPY gate:** SPY must be up ≥+0.5% (existing, stricter secondary check inside `intraday_momentum.py`)
 - Scan Pool 3 for stocks up ≥+0.5% above VWAP
 - Candidates tagged with `pool=2` and `signal_type=INTRADAY_MOMENTUM`
 - Run through Strategy → Risk → Guardrails → Execute pipeline
@@ -387,7 +390,7 @@ Confidence is assigned by Claude based on behavioral context, VWAP position, and
 ```
 entry_price    = Alpaca ask price (live) or scanner close
 target_price   = round(entry × 1.04, 2)     # +4% ceiling — limit order on Leg B
-partial_target = round(entry × 1.01, 2)     # +1% partial exit (Leg A)
+partial_target = round(entry × 1.005, 2)    # +0.5% partial exit (Leg A)
 
 # ATR-based stop (P0) — applied by atr_sizer.py after sector guard:
 stop_pct    = max(atr_pct × 1.2, 0.5%)     # outside the noise band; floor 0.5%
@@ -407,12 +410,12 @@ Reward:Risk (intraday)   = 1.00% / stop_pct
 Each trade (premarket) opens as two independent bracket orders:
 
 ```
-Leg A  →  shares // 2   ·  target = entry × 1.01  (+1%)
-Leg B  →  shares − A    ·  target = entry × 1.02  (+2%)
+Leg A  →  shares // 2   ·  target = entry × 1.005  (+0.5%)
+Leg B  →  shares − A    ·  target = entry × 1.02   (+2%)
 Both   →  stop_loss = entry × 0.9933
 ```
 
-**Why:** Converts all-or-nothing bracket outcomes into graduated P&L. On days where the full +2% move doesn't materialize, Leg A still closes at +1%, yielding positive P&L where a single-leg design would show a stop-out.
+**Why:** Converts all-or-nothing bracket outcomes into graduated P&L. 0.5% moves happen more frequently than 1% moves — Leg A closes early, reducing full stop-out frequency. Leg B continues trailing toward the +2% target.
 
 ### 7.4 Time-of-Day Rules
 
@@ -435,6 +438,18 @@ effective_stop = max(stop_loss, high_watermark × (1 − 1.0%))
 After Tier 1 lock-in ($500 realized):
 effective_stop = max(stop_loss, high_watermark × (1 − 0.5%))
 ```
+
+### 7.6 Entry Limit Pricing
+
+At execution time, `hybrid_limit_price(ask, bid)` sets the bracket order limit price. Passive-first — the stock must come to us.
+
+| Spread | Limit Price | Rationale |
+|--------|-------------|-----------|
+| < 0.10% of ask | bid | Ultra-tight market; fills on any normal tick |
+| 0.10–0.20% | mid | Moderate spread; mid fills on normal intraday dips |
+| > 0.20% | skip (None) | Wide spread destroys R:R before entry |
+
+Same logic as Strategy A. Tradeoff: better average entry price vs higher unfill rate on straight-line days.
 
 ---
 
@@ -477,7 +492,7 @@ The Pool Filter itself is a risk layer — only stocks with proven behavioral tr
 | `TOTAL_CAPITAL` | $50,000 | Simulated account size |
 | `TARGET_PCT` | 4.0% | Ceiling limit order on Leg B — trail exits earlier in most trades |
 | `INTRADAY_TARGET_PCT` | 1.0% | Intraday entry profit target |
-| `PARTIAL_PROFIT_PCT` | 1.0% | Partial exit (Leg A) |
+| `PARTIAL_PROFIT_PCT` | 0.5% | Partial exit (Leg A) — lowered from 1% to capture profit before reversals |
 | `MAX_LOSS_PER_TRADE` | 0.67% | Formula stop (Claude prompt reference; overridden by ATR sizer at runtime) |
 | `ATR_STOP_MULTIPLIER` | 1.2 | ATR-based stop multiplier: stop = max(ATR × 1.2, 0.5%) |
 | `ATR_STOP_FLOOR` | 0.5% | Minimum stop regardless of ATR |
@@ -492,7 +507,9 @@ The Pool Filter itself is a risk layer — only stocks with proven behavioral tr
 | `MAX_POSITIONS` | 10 | Max concurrent positions |
 | `MAX_INTRADAY_RUNS` | 6 | Max momentum scan runs per day |
 | `MIN_INTRADAY_INTERVAL_MIN` | 90 | Min minutes between momentum scans |
-| `SPY_MOMENTUM_GATE` | +0.5% | SPY min gain to allow momentum scan |
+| `MIN_SPY_MOVE_PCT` | 0.3% | Orchestrator-level SPY gate — skips day entirely if SPY negative at premarket; blocks intraday scan if SPY < +0.3% |
+| `MAX_DAILY_ENTRIES` | 10 | Hard cap on total new positions per calendar day |
+| `SPY_MOMENTUM_GATE` | +0.5% | Momentum scanner SPY gate (secondary, stricter than orchestrator gate) |
 | `POOL_PROMOTE_THRESHOLD` | 6.0 | 7-day rolling score to promote to Pool 2 |
 | `POOL_DEMOTE_THRESHOLD` | 3.0 | 7-day rolling score to demote from Pool 2 (applies to seed stocks too) |
 | `POOL3_MIN_FILTER_SCORE` | 0.0 | Quality floor: Pool Filter rejects tickers with net-negative composite score |
@@ -645,6 +662,18 @@ notes           text
 ---
 
 ## 12. Change Log
+
+### v2.0 — 2026-05-27
+
+**Win-rate fixes + passive entry pricing (mirroring Strategy A v5.26)**
+
+- `PARTIAL_PROFIT_PCT` 1%→0.5%: Leg A now targets +0.5% so profit is captured before the first potential reversal. More legs close at a gain; full stop-outs happen less often.
+- `MAX_DAILY_ENTRIES=10` added: hard cap on daily new positions, same logic as Strategy A.
+- SPY premarket gate (step 4.5): if SPY `today_pct_change` < 0, skip the day entirely. Harder than Strategy A (which only reduces max_positions by 3) — Strategy B's small Pool 3 universe is more exposed on down-SPY days.
+- SPY intraday gate (step 4.5 orchestrator-level, `MIN_SPY_MOVE_PCT=0.3%`): added upstream of the existing momentum scanner's +0.5% gate. Now two checks: orchestrator blocks below 0.3%, scanner blocks below 0.5%.
+- Premarket candidate cap (step 4.6): top 10 by technical score before Claude call.
+- `hybrid_limit_price` passive-first: bid on tight spread (<0.1%), mid on moderate (0.1–0.2%), None on wide. Stock must come to us, not us chasing the ask.
+- Tests: 342 passing.
 
 ### v1.9 — 2026-05-26
 
