@@ -428,6 +428,33 @@ def premarket(broker: str = "alpaca") -> None:
         ]
         print(f"    No scanner signals → using {len(candidates)} pool_filter candidates (fallback)")
 
+    # 3.2 Live price refresh + VWAP enrichment via Alpaca snapshot (batch call)
+    if broker == "alpaca":
+        from concurrent.futures import ThreadPoolExecutor
+        from agents.alpaca_broker import get_live_prices, get_intraday_signals
+        tickers = [c["ticker"] for c in candidates]
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            f_prices  = executor.submit(get_live_prices, tickers)
+            f_signals = executor.submit(get_intraday_signals, tickers)
+            live          = f_prices.result()
+            intraday_sigs = f_signals.result()
+        updated = 0
+        for c in candidates:
+            ask = live.get(c["ticker"])
+            cur = c.get("current_price") or c.get("price") or 0
+            if ask and cur and abs(ask - cur) / cur < 0.10:
+                c["current_price"] = ask
+                updated += 1
+        enriched = 0
+        for c in candidates:
+            sig = intraday_sigs.get(c["ticker"])
+            if sig:
+                c.update(sig)
+                enriched += 1
+        candidates.sort(key=lambda x: (not x.get("above_vwap", False), -(x.get("rs_vs_spy") or 0)))
+        above_vwap = sum(1 for c in candidates if c.get("above_vwap"))
+        print(f"    Live price: {updated}/{len(candidates)} updated | VWAP: {enriched}/{len(candidates)} enriched — {above_vwap} above VWAP")
+
     # 3.5 Earnings blackout + news intelligence
     ni_result   = news_intel.run(candidates)
     candidates  = ni_result["filtered_candidates"]
