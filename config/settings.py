@@ -19,6 +19,7 @@ DAILY_PROFIT_TARGET  = 500
 MAX_POSITION_PCT     = 0.07
 MIN_POSITION_PCT     = 0.05
 MAX_POSITIONS        = 10           # fewer positions — blue chip focus
+MAX_DAILY_ENTRIES    = 10           # hard cap: total new positions opened per calendar day across all scans
 MAX_LOSS_PER_TRADE   = 0.0067
 MAX_ATR_PCT          = 3.0        # skip stocks with ATR% > this — blue chip universe floor
 ATR_STOP_MULTIPLIER  = 1.2        # P0: stop = max(atr_pct × 1.2, ATR_STOP_FLOOR)
@@ -37,7 +38,7 @@ LOCK_IN_TRAIL_PCT    = 0.005
 TRAIL_PCT            = 0.01
 USE_NATIVE_TRAILING_STOP = True   # bracket order with Alpaca native trail — real-time floor, no polling gap
 PARTIAL_PROFIT_ENABLED = True
-PARTIAL_PROFIT_PCT   = 0.01
+PARTIAL_PROFIT_PCT   = 0.005       # 0.5% partial exit — captures gains before reversal (tightened from 1%)
 
 # R-multiple stop ladder — ratchets stop up at profit milestones
 # R = entry - stop_loss (initial risk per share)
@@ -71,7 +72,7 @@ INTRADAY_SCAN_MAX_RUNS          = 6    # hourly: 10 AM, 11 AM, 12 PM, 1 PM, 2 PM
 INTRADAY_SCAN_MIN_INTERVAL_MINS = 55   # ~1 hr apart (55 min absorbs GH Actions delay)
 INTRADAY_TARGET_PCT             = 0.01
 MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal)
-MIN_SPY_MOVE_PCT                = 0.0   # SPY must not be negative — blocks down market days only
+MIN_SPY_MOVE_PCT                = 0.003  # SPY must be up ≥0.3% for intraday entries — blocks flat/down market scans
 STRONG_SECTOR_THRESHOLD         = 2.0   # sector ETF up >= this % overrides SPY gate on rotation days
 
 # Pool system thresholds

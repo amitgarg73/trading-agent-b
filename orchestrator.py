@@ -103,10 +103,10 @@ def _log_run_b(mode: str, status: str, details: dict | None = None) -> None:
         print(f"  ⚠️  _log_run_b({mode}, {status}) failed: {e}")
 from config.settings import (
     TOTAL_CAPITAL, POSITION_SIZE_BY_CONFIDENCE,
-    MAX_POSITIONS, DAILY_BONUS_TARGET, DAILY_LOSS_LIMIT,
+    MAX_POSITIONS, MAX_DAILY_ENTRIES, DAILY_BONUS_TARGET, DAILY_LOSS_LIMIT,
     INTRADAY_SCAN_UTC_START, INTRADAY_SCAN_UTC_END, INTRADAY_ENTRY_CUTOFF_UTC,
     INTRADAY_SCAN_MAX_RUNS, INTRADAY_SCAN_MIN_INTERVAL_MINS,
-    INTRADAY_TARGET_PCT, MIN_INTRADAY_MOVE_PCT,
+    INTRADAY_TARGET_PCT, MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT,
     TARGET_PCT, MAX_LOSS_PER_TRADE,
 )
 
@@ -233,6 +233,13 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         print(f"  📊 Intraday scan skipped: {open_count}/{MAX_POSITIONS} slots full")
         return
 
+    # Daily entry cap — prevents over-trading on high-vol days where stops free slots quickly
+    all_pos_today = db.select("b_positions", filters_gte={"opened_at": f"{today}T00:00:00"})
+    daily_opened  = len(all_pos_today)
+    if daily_opened >= MAX_DAILY_ENTRIES:
+        print(f"  📊 Intraday scan skipped: daily entry cap hit ({daily_opened}/{MAX_DAILY_ENTRIES})")
+        return
+
     today_realized = _today_realized_pnl()
     unrealized     = sum(p.get("unrealized_pnl") or 0 for p in open_pos)
     total          = today_realized + unrealized
@@ -246,6 +253,21 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         print(f"  🏆 Intraday scan skipped: bonus target reached (${total:,.2f})")
         return
 
+    # SPY gate — require SPY up ≥MIN_SPY_MOVE_PCT% for intraday entries.
+    # Prevents opening positions on flat/down market days where momentum setups fail.
+    if broker == "alpaca":
+        try:
+            from agents.alpaca_broker import get_intraday_signals
+            _spy_pct = get_intraday_signals(["SPY"]).get("SPY", {}).get("today_pct_change", 0)
+            _threshold = MIN_SPY_MOVE_PCT * 100
+            if _spy_pct < _threshold:
+                print(f"  ⛔ Intraday scan skipped: SPY {_spy_pct:+.2f}% < {_threshold:.1f}% gate")
+                _save_intraday_scan(today, now_utc, {"candidates": 0, "reason": f"SPY gate {_spy_pct:+.2f}%"})
+                return
+            print(f"  ✅ SPY gate: {_spy_pct:+.2f}% ≥ {_threshold:.1f}% — intraday scan allowed")
+        except Exception as _e:
+            print(f"  ⚠️  SPY gate check failed: {_e} — proceeding anyway")
+
     # Re-run pool filter live — independent of premarket plan
     from scanner.pool_filter import get_pool3_tickers
     pool3_tickers = get_pool3_tickers()
@@ -253,7 +275,7 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         print("  📊 Intraday scan: no Pool 3 tickers available right now")
         return
 
-    available_slots = MAX_POSITIONS - open_count
+    available_slots = min(MAX_POSITIONS - open_count, MAX_DAILY_ENTRIES - daily_opened)
     run_num         = len(prior_scans) + 1
     print(f"\n  🔍 Intraday scan #{run_num}: {open_count}/{MAX_POSITIONS} slots | "
           f"{available_slots} available | realized ${today_realized:,.2f}")
@@ -432,10 +454,11 @@ def premarket(broker: str = "alpaca") -> None:
     if broker == "alpaca":
         from concurrent.futures import ThreadPoolExecutor
         from agents.alpaca_broker import get_live_prices, get_intraday_signals
-        tickers = [c["ticker"] for c in candidates]
+        tickers         = [c["ticker"] for c in candidates]
+        signal_tickers  = list(set(tickers + ["SPY"]))
         with ThreadPoolExecutor(max_workers=2) as executor:
             f_prices  = executor.submit(get_live_prices, tickers)
-            f_signals = executor.submit(get_intraday_signals, tickers)
+            f_signals = executor.submit(get_intraday_signals, signal_tickers)
             live          = f_prices.result()
             intraday_sigs = f_signals.result()
         updated = 0
@@ -491,6 +514,14 @@ def premarket(broker: str = "alpaca") -> None:
         if dropped_top:
             print(f"    Top-of-range filter: dropped {dropped_top} near-day-high candidate(s)")
 
+        # SPY premarket gate — if SPY opened negative, reduce slots to avoid down-market momentum entries.
+        _spy_pct = intraday_sigs.get("SPY", {}).get("today_pct_change", None)
+        if _spy_pct is not None and _spy_pct < 0:
+            print(f"    ⚠️  SPY premarket: {_spy_pct:+.2f}% — market opened negative. Skipping today.")
+            return
+        elif _spy_pct is not None:
+            print(f"    SPY premarket: {_spy_pct:+.2f}% ✅")
+
     # 3.5 Earnings blackout + news intelligence
     ni_result   = news_intel.run(candidates)
     candidates  = ni_result["filtered_candidates"]
@@ -500,6 +531,12 @@ def premarket(broker: str = "alpaca") -> None:
     if not candidates:
         print("[orchestrator] No candidates to trade")
         return
+
+    # 3.8 Trade cap — top MAX_DAILY_ENTRIES candidates by score before Claude sees them.
+    if len(candidates) > MAX_DAILY_ENTRIES:
+        candidates.sort(key=lambda x: x.get("technical_score") or 0, reverse=True)
+        candidates = candidates[:MAX_DAILY_ENTRIES]
+        print(f"    Trade cap: top {MAX_DAILY_ENTRIES} candidates by score sent to Claude")
 
     # 4. Claude selects trades
     print("\n[4] Claude selecting trades...")

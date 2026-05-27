@@ -224,3 +224,87 @@ class TestStrategyBScannerATR:
 
         if result is not None:
             assert "atr" in result, "_score_ticker output must include 'atr' field"
+
+
+# ── SPY gate and daily entry cap (intraday) ───────────────────────────────────
+
+from datetime import datetime as real_dt, date as real_date
+from unittest.mock import MagicMock, patch
+from config.settings import MAX_DAILY_ENTRIES, INTRADAY_SCAN_UTC_START
+
+
+def _run_intraday_alpaca(spy_pct: float, daily_opened: int = 0):
+    """
+    Run _maybe_run_intraday_scan(broker="alpaca") with SPY pct and daily opened count mocked.
+    Returns mock_momentum so callers can assert whether the scan pipeline ran.
+    """
+    fake_now = real_dt(2026, 5, 27, INTRADAY_SCAN_UTC_START, 30, 0)
+    today_str = "2026-05-27"
+
+    # Build b_positions rows for daily_opened simulation
+    daily_rows = [{"opened_at": f"{today_str}T{14+i:02d}:00:00"} for i in range(daily_opened)]
+
+    spy_sig = {"SPY": {"today_pct_change": spy_pct}}
+    mock_momentum = MagicMock(return_value=[])
+
+    def db_select(table, **kw):
+        f    = kw.get("filters", {})
+        fgte = kw.get("filters_gte", {})
+        if table == "b_scan_results":
+            return []
+        if f.get("status") == "OPEN":
+            return []
+        if f.get("status") == "CLOSED" and not fgte:
+            return [{"realized_pnl": 100.0, "closed_at": f"{today_str}T14:00:00", "close_reason": "TARGET"}]
+        if fgte:
+            return daily_rows
+        return []
+
+    with patch("orchestrator.datetime") as mock_dt, \
+         patch("orchestrator.date") as mock_date, \
+         patch("core.db.select",  side_effect=db_select), \
+         patch("core.db.insert",  return_value={"id": "x"}), \
+         patch("orchestrator.open_positions", return_value=[]), \
+         patch("agents.alpaca_broker.get_intraday_signals", return_value=spy_sig), \
+         patch("scanner.intraday_momentum.scan", mock_momentum), \
+         patch("scanner.pool_filter.get_pool3_tickers", return_value=["AAPL", "MSFT"]):
+        mock_dt.utcnow.return_value = fake_now
+        mock_dt.fromisoformat = real_dt.fromisoformat
+        mock_date.today.return_value = real_date(2026, 5, 27)
+        from orchestrator import _maybe_run_intraday_scan
+        _maybe_run_intraday_scan(broker="alpaca")
+
+    return mock_momentum
+
+
+class TestStrategyBSPYGate:
+    """SPY gate in Strategy B intraday scan must block flat/down market days."""
+
+    def test_spy_gate_blocks_negative_spy(self):
+        """SPY -0.5% → gate blocks before momentum scan."""
+        mock_momentum = _run_intraday_alpaca(spy_pct=-0.5)
+        mock_momentum.assert_not_called()
+
+    def test_spy_gate_blocks_flat_market(self):
+        """SPY +0.1% (below 0.3% gate) → scan blocked."""
+        mock_momentum = _run_intraday_alpaca(spy_pct=0.1)
+        mock_momentum.assert_not_called()
+
+    def test_spy_gate_passes_above_threshold(self):
+        """SPY +0.5% → gate passes, momentum scan runs."""
+        mock_momentum = _run_intraday_alpaca(spy_pct=0.5)
+        mock_momentum.assert_called_once()
+
+
+class TestStrategyBDailyEntryCap:
+    """Daily entry cap must prevent intraday scan when MAX_DAILY_ENTRIES already opened."""
+
+    def test_cap_blocks_when_limit_reached(self):
+        """Already opened MAX_DAILY_ENTRIES positions today → scan skipped."""
+        mock_momentum = _run_intraday_alpaca(spy_pct=0.5, daily_opened=MAX_DAILY_ENTRIES)
+        mock_momentum.assert_not_called()
+
+    def test_cap_allows_when_one_slot_left(self):
+        """One slot remaining under cap → scan proceeds."""
+        mock_momentum = _run_intraday_alpaca(spy_pct=0.5, daily_opened=MAX_DAILY_ENTRIES - 1)
+        mock_momentum.assert_called_once()
