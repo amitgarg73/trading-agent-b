@@ -475,6 +475,22 @@ def premarket(broker: str = "alpaca") -> None:
         if dropped_orb:
             print(f"    ORB filter: dropped {dropped_orb} inside-range candidate(s)")
 
+        # Drop stocks in the top 15% of today's day range — near-day-high entries have little
+        # upside and high retracement risk.
+        pre_top = len(candidates)
+        candidates = [
+            c for c in candidates
+            if not (
+                c.get("day_high") and c.get("day_low")
+                and (c["day_high"] - c["day_low"]) > 0
+                and ((c.get("current_price") or c.get("price") or 0) - c["day_low"]) /
+                    (c["day_high"] - c["day_low"]) > 0.85
+            )
+        ]
+        dropped_top = pre_top - len(candidates)
+        if dropped_top:
+            print(f"    Top-of-range filter: dropped {dropped_top} near-day-high candidate(s)")
+
     # 3.5 Earnings blackout + news intelligence
     ni_result   = news_intel.run(candidates)
     candidates  = ni_result["filtered_candidates"]
