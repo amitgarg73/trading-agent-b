@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v1.8 · **Updated:** 2026-05-23
+**Version:** v1.9 · **Updated:** 2026-05-26
 
 ---
 
@@ -449,7 +449,7 @@ Six independent layers applied in sequence — any one can block a trade:
 | **Risk Agent** | risk.py | R:R below 2.0 floor, position size out of bounds, stop too wide; daily loss limit checked as MTM (realized + unrealized) so open positions bleeding losses fire the limit before new trades are entered |
 | **Sector Guard** | sector_guard.py | Sector concentration breaches |
 | **ATR Sizer** | atr_sizer.py | Drops trades where ATR stop ≥ target; halves shares on choppy opens (ORB < 0.5 × ATR) |
-| **Guardrails** | guardrails.py | Duplicates, price sanity (>5% from market), daily loss limit, max positions |
+| **Guardrails** | guardrails.py | Duplicates, price sanity (>5% from market), daily loss limit, max positions. `_traded_today()` uses a date-filtered query so only today's positions are loaded from Supabase. |
 | **API Resilience** | strategy.py | Anthropic API failures: 3-attempt retry with 15/30/45s backoff; on total failure returns empty trades (graceful skip, no crash) |
 
 ### 8.1 Intraday Momentum Guards
@@ -645,6 +645,14 @@ notes           text
 ---
 
 ## 12. Change Log
+
+### v1.9 — 2026-05-26
+
+**Ported bug fixes from Strategy A (audit pass)**
+
+- **CLEANUP/UNFILLED exclusion:** `_today_realized_pnl()` in `orchestrator.py`, `risk.py`, and `alpaca_broker.py` now exclude positions with `close_reason` of CLEANUP or UNFILLED from the daily realized total. Previously all closed positions were summed, allowing phantom P&L to distort the daily loss limit and bonus target checks.
+- **Date-filtered DB queries:** All 4 historical CLOSED-position queries now push a date-range filter to Supabase via `filters_gte`/`filters_lte` instead of loading the full table and filtering in Python. `core/db.py` `select()` gains `filters_gte` and `filters_lte` parameters. Affected locations: `orchestrator.py` realized P&L, `orchestrator.py` traded-today set, `alpaca_broker.py` bonus target check, `guardrails.py` `_traded_today()`.
+- Tests: 313 passing.
 
 ### v1.8 — 2026-05-23
 
