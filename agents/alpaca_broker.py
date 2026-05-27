@@ -148,6 +148,7 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
 
         try:
             target_price = round(float(trade["target_price"]), 2)
+            stop_price   = round(float(trade["stop_loss"]), 2)
             req = MarketOrderRequest(
                 symbol=ticker,
                 qty=shares,
@@ -155,11 +156,11 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                 time_in_force=TimeInForce.DAY,
                 order_class=OrderClass.BRACKET,
                 take_profit=TakeProfitRequest(limit_price=target_price),
-                stop_loss=StopLossRequest(trail_percent=round(TRAIL_PCT * 100, 4)),
+                stop_loss=StopLossRequest(stop_price=stop_price),
                 client_order_id=_order_id(ticker),
             )
             order = broker.submit_order(req)
-            print(f"[alpaca] BUY {shares} {ticker} @ market bracket → target={target_price} trail={TRAIL_PCT*100:.1f}% (pool {pool}) — order {order.id}")
+            print(f"[alpaca] BUY {shares} {ticker} @ market bracket → target={target_price} stop={stop_price} (pool {pool}) — order {order.id}")
 
             # Verify order filled (not cancelled/rejected) before writing to DB
             fill_price     = None
@@ -215,6 +216,29 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
             print(f"[alpaca] Failed to place {ticker}: {e}")
 
     return placed
+
+
+def submit_trailing_stop(ticker: str, shares: int, trail_pct: float) -> str | None:
+    from alpaca.trading.requests import TrailingStopOrderRequest
+    try:
+        req = TrailingStopOrderRequest(
+            symbol=ticker, qty=shares, side=OrderSide.SELL,
+            time_in_force=TimeInForce.DAY,
+            trail_percent=round(trail_pct * 100, 2),
+            client_order_id=_order_id(ticker),
+        )
+        order = _get().submit_order(req)
+        return str(order.id)
+    except Exception as e:
+        print(f"        ⚠️  Trailing stop submission failed for {ticker}: {e}")
+        return None
+
+
+def cancel_order(order_id: str) -> None:
+    try:
+        _get().cancel_order_by_id(order_id)
+    except Exception:
+        pass
 
 
 def open_positions() -> list[dict]:

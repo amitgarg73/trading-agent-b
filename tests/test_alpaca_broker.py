@@ -520,3 +520,38 @@ def test_close_position_no_order_id_skips_cancel(mock_get, mock_update):
     _close_position(pos, price=107.0, reason="EOD")
 
     mock_get.return_value.cancel_order_by_id.assert_not_called()
+
+
+# ── place_orders uses stop_price not trail_percent ────────────────────────────
+
+@patch("agents.alpaca_broker._get")
+def test_place_orders_uses_stop_price_not_trail_percent(mock_get):
+    """place_orders must pass stop_price to StopLossRequest — trail_percent is invalid and causes API rejection."""
+    from unittest.mock import MagicMock
+    import agents.alpaca_broker as broker_mod
+
+    filled = MagicMock()
+    filled.id = "ord-123"
+    filled.status = "filled"
+    filled.filled_avg_price = 150.0
+
+    mock_broker = mock_get.return_value
+    mock_broker.submit_order.return_value = MagicMock(id="ord-123")
+    mock_broker.get_order_by_id.return_value = filled
+
+    trade = {
+        "ticker": "AAPL", "shares": 10, "pool": 2, "action": "BUY",
+        "entry_price": 150.0, "target_price": 156.0, "stop_loss": 147.0,
+        "position_size": 1500, "confidence": "MEDIUM",
+    }
+
+    with patch("agents.alpaca_broker.db") as mock_db:
+        mock_db.insert.return_value = None
+        broker_mod.place_orders([trade])
+
+    from alpaca.trading.requests import StopLossRequest
+    call_kwargs = mock_broker.submit_order.call_args[0][0]
+    stop_req = call_kwargs.stop_loss
+    assert isinstance(stop_req, StopLossRequest)
+    assert stop_req.stop_price == pytest.approx(147.0)
+    assert not hasattr(stop_req, "trail_percent") or stop_req.trail_percent is None
