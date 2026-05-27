@@ -468,6 +468,13 @@ def premarket(broker: str = "alpaca") -> None:
         if dropped:
             print(f"    Extension filter: dropped {dropped} extended-low-vol candidate(s)")
 
+        # Drop stocks still inside the opening range — price below ORB high = no breakout.
+        pre_orb = len(candidates)
+        candidates = [c for c in candidates if c.get("above_orb") is not False]
+        dropped_orb = pre_orb - len(candidates)
+        if dropped_orb:
+            print(f"    ORB filter: dropped {dropped_orb} inside-range candidate(s)")
+
     # 3.5 Earnings blackout + news intelligence
     ni_result   = news_intel.run(candidates)
     candidates  = ni_result["filtered_candidates"]
