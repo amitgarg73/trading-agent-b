@@ -455,6 +455,19 @@ def premarket(broker: str = "alpaca") -> None:
         above_vwap = sum(1 for c in candidates if c.get("above_vwap"))
         print(f"    Live price: {updated}/{len(candidates)} updated | VWAP: {enriched}/{len(candidates)} enriched — {above_vwap} above VWAP")
 
+        # Drop stocks already extended from open on weak volume (chasing exhausted momentum).
+        pre_ext = len(candidates)
+        candidates = [
+            c for c in candidates
+            if not (
+                (c.get("today_pct_change") or 0) > 3.0
+                and (c.get("volume_ratio") or 0) < 0.7
+            )
+        ]
+        dropped = pre_ext - len(candidates)
+        if dropped:
+            print(f"    Extension filter: dropped {dropped} extended-low-vol candidate(s)")
+
     # 3.5 Earnings blackout + news intelligence
     ni_result   = news_intel.run(candidates)
     candidates  = ni_result["filtered_candidates"]
