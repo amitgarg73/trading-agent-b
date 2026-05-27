@@ -19,10 +19,15 @@ def _get() -> Client:
 
 
 def select(table: str, filters: dict | None = None,
-           order: str | None = None, limit: int | None = None) -> list[dict]:
+           order: str | None = None, limit: int | None = None,
+           filters_gte: dict | None = None, filters_lte: dict | None = None) -> list[dict]:
     q = _get().table(table).select("*")
     for k, v in (filters or {}).items():
         q = q.is_(k, "null") if v is None else q.eq(k, v)
+    for k, v in (filters_gte or {}).items():
+        q = q.gte(k, v)
+    for k, v in (filters_lte or {}).items():
+        q = q.lte(k, v)
     if order:
         q = q.order(order, desc=True)
     if limit:

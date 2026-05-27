@@ -139,9 +139,13 @@ def _is_halted() -> bool:
 
 def _today_realized_pnl() -> float:
     today = str(date.today())
-    rows  = db.select("b_positions", filters={"status": "CLOSED"})
-    return sum(r.get("realized_pnl") or 0 for r in rows
-               if str(r.get("closed_at", ""))[:10] == today)
+    rows = db.select("b_positions", filters={"status": "CLOSED"},
+                     filters_gte={"closed_at": f"{today}T00:00:00"})
+    return sum(
+        r.get("realized_pnl") or 0
+        for r in rows
+        if r.get("close_reason") not in ("CLEANUP", "UNFILLED")
+    )
 
 
 def _cap_intraday_targets(trades: list[dict]) -> list[dict]:
@@ -258,11 +262,11 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         from scanner.intraday_momentum import scan as momentum_scan
 
         # Tickers already traded today — don't re-enter (open or closed)
-        today_closed  = db.select("b_positions", filters={"status": "CLOSED"})
+        today_closed  = db.select("b_positions", filters={"status": "CLOSED"},
+                                  filters_gte={"opened_at": f"{today}T00:00:00"})
         traded_today  = (
             {p["ticker"] for p in open_pos if p.get("ticker")}
-            | {p["ticker"] for p in today_closed
-               if p.get("ticker") and str(p.get("opened_at", ""))[:10] == today}
+            | {p["ticker"] for p in today_closed if p.get("ticker")}
         )
 
         candidates = [c for c in momentum_scan(pool3_tickers, broker=broker)

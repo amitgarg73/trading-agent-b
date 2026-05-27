@@ -65,8 +65,8 @@ def _get_buying_power(broker: str) -> float | None:
 def _traded_today() -> set[str]:
     today = date.today().isoformat()
     open_pos    = db.select("b_positions", filters={"status": "OPEN"})
-    closed_pos  = db.select("b_positions", filters={"status": "CLOSED"})
-    closed_today = [p for p in closed_pos if str(p.get("closed_at", ""))[:10] == today]
+    closed_today = db.select("b_positions", filters={"status": "CLOSED"},
+                             filters_gte={"opened_at": f"{today}T00:00:00"})
     return {p["ticker"] for p in open_pos} | {p["ticker"] for p in closed_today}
 
 

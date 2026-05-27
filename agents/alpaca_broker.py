@@ -355,8 +355,9 @@ def update_positions_intraday() -> dict:
 
     today_realized = sum(
         r.get("realized_pnl") or 0
-        for r in db.select("b_positions", filters={"status": "CLOSED"})
-        if str(r.get("closed_at", ""))[:10] == str(date.today())
+        for r in db.select("b_positions", filters={"status": "CLOSED"},
+                           filters_gte={"closed_at": f"{date.today()}T00:00:00"})
+        if r.get("close_reason") not in ("CLEANUP", "UNFILLED")
     )
 
     # Batch-fetch VWAP signals once for all open tickers

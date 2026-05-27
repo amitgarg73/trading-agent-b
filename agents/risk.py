@@ -19,8 +19,13 @@ def _open_positions() -> list[dict]:
 
 def _today_realized_pnl() -> float:
     today = str(date.today())
-    rows  = db.select("b_positions", filters={"status": "CLOSED"})
-    return sum(r.get("realized_pnl") or 0 for r in rows if str(r.get("closed_at", ""))[:10] == today)
+    rows = db.select("b_positions", filters={"status": "CLOSED"},
+                     filters_gte={"closed_at": f"{today}T00:00:00"})
+    return sum(
+        r.get("realized_pnl") or 0
+        for r in rows
+        if r.get("close_reason") not in ("CLEANUP", "UNFILLED")
+    )
 
 
 def _today_net_pnl(open_pos: list[dict]) -> float:
