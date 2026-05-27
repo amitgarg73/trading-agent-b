@@ -12,16 +12,17 @@ from config.settings import (
     INTRADAY_SCAN_MIN_INTERVAL_MINS, MAX_POSITIONS,
 )
 
-TODAY = "2026-05-21"
+TODAY = date.today().isoformat()
 WINDOW_HOUR = INTRADAY_SCAN_UTC_START  # 15 UTC = 11 AM ET
+_TODAY_DATE = date.today()
 
 
 def _utc_now(hour: int = WINDOW_HOUR):
-    return real_datetime(2026, 5, 21, hour, 30, 0)
+    return real_datetime(_TODAY_DATE.year, _TODAY_DATE.month, _TODAY_DATE.day, hour, 30, 0)
 
 
 def _today():
-    return "2026-05-21"
+    return TODAY
 
 
 def _default_trade():
@@ -84,7 +85,7 @@ def _run_b_intraday_scan(hour=WINDOW_HOUR, prior_scans=None, open_pos=None,
          patch("orchestrator.place_orders",            mock_place):
         mock_dt.utcnow.return_value    = _utc_now(hour)
         mock_dt.fromisoformat.side_effect = real_datetime.fromisoformat
-        mock_date.today.return_value   = date(2026, 5, 21)
+        mock_date.today.return_value   = _TODAY_DATE
         from orchestrator import _maybe_run_intraday_scan
         _maybe_run_intraday_scan(broker=broker)
 
@@ -113,7 +114,7 @@ class TestNetPnlLossGuardB:
              patch("orchestrator._today_realized_pnl",   return_value=-200.0):
             mock_dt.utcnow.return_value   = _utc_now()
             mock_dt.fromisoformat.side_effect = real_datetime.fromisoformat
-            mock_date.today.return_value  = date(2026, 5, 21)
+            mock_date.today.return_value  = _TODAY_DATE
             from orchestrator import _maybe_run_intraday_scan
             _maybe_run_intraday_scan(broker="simulation")
 
@@ -131,7 +132,7 @@ class TestNetPnlLossGuardB:
              patch("orchestrator._today_realized_pnl",   return_value=float(DAILY_LOSS_LIMIT)):
             mock_dt.utcnow.return_value   = _utc_now()
             mock_dt.fromisoformat.side_effect = real_datetime.fromisoformat
-            mock_date.today.return_value  = date(2026, 5, 21)
+            mock_date.today.return_value  = _TODAY_DATE
             from orchestrator import _maybe_run_intraday_scan
             _maybe_run_intraday_scan(broker="simulation")
 
