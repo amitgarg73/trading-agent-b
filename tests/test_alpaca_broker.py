@@ -550,8 +550,11 @@ def test_place_orders_uses_stop_price_not_trail_percent(mock_get):
         broker_mod.place_orders([trade])
 
     from alpaca.trading.requests import StopLossRequest
-    call_kwargs = mock_broker.submit_order.call_args[0][0]
-    stop_req = call_kwargs.stop_loss
+    # First submit_order call is the bracket; second is the trailing stop.
+    bracket_req = mock_broker.submit_order.call_args_list[0][0][0]
+    stop_req = bracket_req.stop_loss
     assert isinstance(stop_req, StopLossRequest)
     assert stop_req.stop_price == pytest.approx(147.0)
     assert not hasattr(stop_req, "trail_percent") or stop_req.trail_percent is None
+    # Second call is the trailing stop (not a bracket)
+    assert mock_broker.submit_order.call_count == 2

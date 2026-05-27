@@ -128,6 +128,7 @@ alter table b_positions add column if not exists fill_price numeric;
 alter table b_positions add column if not exists low_watermark numeric;
 alter table b_positions add column if not exists mae numeric;
 alter table b_positions add column if not exists mfe numeric;
+alter table b_positions add column if not exists trail_order_id text;
 
 -- Intraday scan tracking (used by _maybe_run_intraday_scan in orchestrator)
 create table if not exists b_scan_results (

@@ -191,8 +191,15 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
             else:
                 fill_price = planned_entry
 
-            # Write to b_positions
-            db.insert("b_positions", {
+            trail_order_id = None
+            if USE_NATIVE_TRAILING_STOP:
+                trail_order_id = submit_trailing_stop(ticker=ticker, shares=shares, trail_pct=TRAIL_PCT)
+                if trail_order_id:
+                    print(f"[alpaca] Trail stop active: {ticker} {TRAIL_PCT*100:.1f}% → {trail_order_id}")
+                else:
+                    print(f"[alpaca] ⚠️  Trail stop failed for {ticker} — bracket hard stop only")
+
+            pos_row = {
                 "ticker":          ticker,
                 "pool":            pool,
                 "action":          "BUY",
@@ -207,7 +214,11 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                 "high_watermark":  fill_price,
                 "low_watermark":   fill_price,
                 "run_id":          run_id,
-            })
+            }
+            if trail_order_id:
+                pos_row["trail_order_id"] = trail_order_id
+            # Write to b_positions
+            db.insert("b_positions", pos_row)
 
             placed.append({**trade, "alpaca_order_id": str(order.id)})
             time.sleep(0.3)
@@ -304,6 +315,14 @@ def _reconcile_with_alpaca() -> None:
             and getattr(o.status, "value", str(o.status)) == "filled"
             and str(o.filled_at or o.submitted_at or "").startswith(today[:10])
         }
+        trail_orders_filled = {
+            str(o.id): float(o.filled_avg_price)
+            for o in all_orders
+            if getattr(o.side, "value", str(o.side)) == "sell"
+            and "trailing" in str(getattr(o, "order_type", "") or "").lower()
+            and getattr(o.status, "value", str(o.status)) == "filled"
+            and o.filled_avg_price
+        }
         pending_buys = {
             str(o.symbol)
             for o in all_orders
@@ -333,11 +352,32 @@ def _reconcile_with_alpaca() -> None:
         if pos["ticker"] in pending_buys:
             print(f"  ⏳ Reconciliation: {pos['ticker']} buy order pending — waiting for fill")
             continue
+        # Check standalone trail exit before bracket — trail fires in real-time server-side.
+        trail_id = pos.get("trail_order_id")
+        if trail_id and trail_id in trail_orders_filled:
+            close_price = trail_orders_filled[trail_id]
+            entry  = float(pos.get("fill_price") or pos["entry_price"])
+            shares = int(pos["shares"])
+            pnl    = round(shares * (close_price - entry), 2)
+            cancel_order(pos.get("alpaca_order_id", ""))  # cancel remaining bracket legs
+            db.update("b_positions", {"id": pos["id"]}, {
+                "status":         "CLOSED",
+                "close_reason":   "NATIVE_TRAIL",
+                "exit_mechanism": "NATIVE_TRAIL",
+                "close_price":    close_price,
+                "realized_pnl":   pnl,
+                "closed_at":      datetime.utcnow().isoformat(),
+            })
+            print(f"  🔒 Native trail exit: {pos['ticker']} @ ${close_price:.2f} P&L={pnl:+.2f}")
+            continue
+
         if pos["ticker"] in filled_buys:
             # Entry filled — bracket leg may have fired. Resolve it here if position is gone.
             order_id = pos.get("alpaca_order_id")
             if order_id:
                 close_price, mechanism = get_order_fill(order_id)
+                if close_price and pos.get("trail_order_id"):
+                    cancel_order(pos["trail_order_id"])  # bracket exited — cancel orphaned trail
                 if close_price:
                     entry  = float(pos.get("fill_price") or pos["entry_price"])
                     shares = int(pos["shares"])
@@ -511,8 +551,7 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
     entry   = float(pos["fill_price"] or pos["entry_price"])  # use actual fill price for P&L
     pnl     = round(shares * (price - entry), 2)
 
-    # Cancel open bracket legs before submitting manual close —
-    # stop/take-profit legs conflict with the market sell order.
+    # Cancel open bracket legs and trailing stop before submitting manual close.
     order_id = pos.get("alpaca_order_id")
     if order_id:
         try:
@@ -520,6 +559,8 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
             time.sleep(0.3)
         except Exception as e:
             print(f"  ⚠️  {ticker}: bracket cancel failed ({e}) — proceeding with market close anyway")
+    if pos.get("trail_order_id"):
+        cancel_order(pos["trail_order_id"])
 
     high_wm = float(pos.get("high_watermark") or entry)
     low_wm  = float(pos.get("low_watermark")  or entry)
