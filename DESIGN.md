@@ -1,5 +1,5 @@
 # Trading Agent B — System Design
-**Version:** v2.0 · **Updated:** 2026-05-27
+**Version:** v2.1 · **Updated:** 2026-05-27
 
 ---
 
@@ -21,7 +21,7 @@ cron-job.org (external scheduler)
        ▼
 GitHub Actions (trading-agent-b)
   .github/workflows/trading.yml
-  premarket · intraday (every 30 min) · EOD
+  premarket · intraday (every 15 min) · entry_scan (hourly) · EOD
        │
        ▼
 orchestrator.py
@@ -30,7 +30,10 @@ orchestrator.py
                                → guardrails → alpaca_broker
                                → Supabase (b_ tables)
 
-  intraday()   ──► Guards (slots · runs · loss limit)
+  intraday()   ──► Reconcile exits → Refresh positions → Lock-in check
+                               (no Claude — position management only)
+
+  entry_scan() ──► Guards (slots · runs · loss limit)
                                → intraday_momentum scanner (Pool 3 movers)
                                → strategy → risk → guardrails
                                → alpaca_broker → Supabase
@@ -299,10 +302,10 @@ PREMARKET (10:00 AM ET)
 
 
 ═══════════════════════════════════════════════════════════════════════════
-INTRADAY (every 30 min · 10:00 AM–3:45 PM ET · momentum scan conditional)
+INTRADAY POSITION MONITOR (every 15 min · 10:00 AM–3:45 PM ET · no Claude)
 ═══════════════════════════════════════════════════════════════════════════
 
-  Every 30 min:
+  Every 15 min:
   ┌────────────────────────────────────────────────────────────────┐
   │  Position Management                                           │
   │                                                                │
@@ -311,11 +314,20 @@ INTRADAY (every 30 min · 10:00 AM–3:45 PM ET · momentum scan conditional)
   │  Lock-in   ──► Tier 1 $500: tighten trail                     │
   │                Tier 2 $700: close all                         │
   └────────────────────────────────────────────────────────────────┘
-                              │
-  Momentum scan guards:       │
-  ┌──────────────┐            ▼
+
+  No Claude call. Deterministic Python only.
+
+═══════════════════════════════════════════════════════════════════════════
+INTRADAY ENTRY SCAN (hourly · 10:30 AM–2:30 PM ET · max 5 runs · Claude)
+═══════════════════════════════════════════════════════════════════════════
+
+  Separate entry_scan.yml workflow. Reads DB state from the 15-min monitor.
+  Skips if no premarket trade plan exists for today.
+
+  Momentum scan guards:
+  ┌──────────────┐
   │ max_runs=6?  │──YES──► Skip
-  │ min_90min?   │──NO ──►
+  │ min_50min?   │──NO ──►
   │ slots open?  │
   │ loss_limit?  │
   └──────┬───────┘
