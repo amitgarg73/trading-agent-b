@@ -1,0 +1,50 @@
+name: Intraday Entry Scan
+
+on:
+  schedule:
+    # Every 60 min 10:30 AM–2:30 PM ET (14:30–18:30 UTC) — entry cutoff is 3:00 PM ET
+    - cron: '30 14-18 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      broker:
+        description: 'Broker'
+        required: false
+        default: 'alpaca'
+        type: choice
+        options: [alpaca, simulation]
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run entry scan
+        env:
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          ALPACA_API_KEY:     ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
+        run: |
+          for attempt in 1 2 3; do
+            echo "▶ Attempt $attempt of 3"
+            python orchestrator.py --mode entry_scan --broker ${{ github.event.inputs.broker || 'alpaca' }} && break
+            if [ $attempt -lt 3 ]; then
+              echo "  ⚠️ Attempt $attempt failed — retrying in 60s..."
+              sleep 60
+            else
+              echo "  ❌ All 3 attempts failed"
+              exit 1
+            fi
+          done

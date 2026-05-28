@@ -662,7 +662,20 @@ def intraday(broker: str = "alpaca") -> None:
     else:
         print("[orchestrator] No open positions to manage")
 
-    # 2. Intraday momentum scan — may open new positions in Pool 3 movers
+
+def entry_scan(broker: str = "alpaca") -> None:
+    print(f"\n{'='*60}")
+    print(f"  STRATEGY B — ENTRY SCAN — {datetime.now().strftime('%Y-%m-%d %H:%M ET')}")
+    print(f"{'='*60}\n")
+
+    if _is_halted():
+        return
+
+    today_iso = date.today().isoformat()
+    if not db.select("b_trade_plans", filters={"date": today_iso}):
+        print(f"  ⚠️  ENTRY SCAN SKIPPED — no premarket plan found for {today_iso}.")
+        return
+
     _maybe_run_intraday_scan(broker)
 
 
@@ -737,7 +750,7 @@ def eod(broker: str = "alpaca") -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Strategy B Orchestrator")
-    parser.add_argument("--mode",   required=True, choices=["premarket", "intraday", "eod"])
+    parser.add_argument("--mode",   required=True, choices=["premarket", "intraday", "eod", "entry_scan"])
     parser.add_argument("--broker", default="alpaca", choices=["alpaca", "simulation"])
     args = parser.parse_args()
 
@@ -745,5 +758,7 @@ if __name__ == "__main__":
         premarket(args.broker)
     elif args.mode == "intraday":
         intraday(args.broker)
+    elif args.mode == "entry_scan":
+        entry_scan(args.broker)
     elif args.mode == "eod":
         eod(args.broker)
