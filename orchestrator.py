@@ -4,6 +4,7 @@ Called by GitHub Actions: python orchestrator.py --mode premarket|intraday|eod
 """
 from __future__ import annotations
 import argparse
+import os
 from datetime import date, datetime
 
 from scanner.scanner import run_scan
@@ -14,6 +15,103 @@ from agents.pool_scorer import score_today, write_daily_performance
 from core import db, ledger
 from core.alerts import send_alert
 from core.pool_manager import seed_pools_if_empty
+
+
+def _write_summary(md: str) -> None:
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        try:
+            with open(path, "a") as f:
+                f.write(md + "\n")
+        except Exception:
+            pass
+
+
+def _premarket_summary(
+    run_time: str,
+    pool3_tickers: list,
+    mkt: dict,
+    spy_pct: float | None,
+    n_after_scan: int,
+    n_after_filters: int,
+    n_sent_to_claude: int,
+    candidates_sent: list,
+    trades_selected: list,
+    risk_rejected: list,
+    guard_rejected: list,
+    final: list,
+    claude_reasoning: str,
+) -> str:
+    fg     = mkt.get("fear_greed", "?")
+    fg_lbl = mkt.get("fear_greed_label", "")
+    vix    = mkt.get("vix_level", "?")
+    bias   = mkt.get("futures_bias", "?")
+    spy_m  = mkt.get("spy_change_pct", spy_pct or 0)
+    sectors = mkt.get("sector_rotation", {})
+    leaders  = [(k, v) for k, v in sorted(sectors.items(), key=lambda x: -x[1]) if v > 0][:3]
+    laggards = [(k, v) for k, v in sorted(sectors.items(), key=lambda x: x[1])  if v < 0][:3]
+
+    lines = [
+        f"## Strategy B Premarket — {run_time}",
+        "",
+        "### Market",
+        f"| Signal | Value |",
+        f"|--------|-------|",
+        f"| SPY | {spy_m:+.2f}% |",
+        f"| VIX | {vix} |",
+        f"| Fear & Greed | {fg} — {fg_lbl} |",
+        f"| Bias | {bias} |",
+    ]
+    if leaders:
+        lines.append(f"| Sector leaders | {', '.join(f'{k} {v:+.1f}%' for k,v in leaders)} |")
+    if laggards:
+        lines.append(f"| Sector laggards | {', '.join(f'{k} {v:+.1f}%' for k,v in laggards)} |")
+
+    lines += [
+        "",
+        "### Candidate Pipeline",
+        f"| Stage | Count |",
+        f"|-------|-------|",
+        f"| Pool 3 | {len(pool3_tickers)} |",
+        f"| After scan | {n_after_scan} |",
+        f"| After filters (VWAP/ORB/range) | {n_after_filters} |",
+        f"| Sent to Claude | {n_sent_to_claude} |",
+        f"| Claude selected | {len(trades_selected)} |",
+        f"| After risk + guardrails | **{len(final)}** |",
+    ]
+
+    if candidates_sent:
+        lines += ["", "### Candidates Claude Evaluated"]
+        lines.append("| Ticker | Score | Vol Ratio | Above VWAP | SPY RS | Today % |")
+        lines.append("|--------|-------|-----------|------------|--------|---------|")
+        for c in candidates_sent:
+            vwap_icon = "✅" if c.get("above_vwap") else "❌"
+            lines.append(
+                f"| {c.get('ticker','')} "
+                f"| {c.get('technical_score', c.get('score','?'))} "
+                f"| {c.get('volume_ratio', c.get('vol_ratio','?'))} "
+                f"| {vwap_icon} "
+                f"| {c.get('rs_vs_spy','?')} "
+                f"| {c.get('today_pct_change','?')} |"
+            )
+
+    all_rejected = risk_rejected + guard_rejected
+    if all_rejected:
+        lines += ["", f"### Rejected", f"Risk/guardrails: {', '.join(all_rejected)}"]
+
+    if claude_reasoning:
+        lines += ["", "### Claude's Reasoning", f"> {claude_reasoning[:600].replace(chr(10), ' ')}"]
+
+    outcome = f"**{len(final)} trade(s) placed**" if final else "**No trades today**"
+    lines += ["", f"### Outcome: {outcome}"]
+    if final:
+        for t in final:
+            lines.append(f"- {t['ticker']}: entry ${t.get('entry_price','?')} | "
+                         f"target ${t.get('target_price','?')} | "
+                         f"stop ${t.get('stop_loss','?')} | "
+                         f"size ${t.get('position_size','?')}")
+
+    return "\n".join(lines)
 
 
 def _sweep_and_verify() -> bool:
@@ -401,6 +499,18 @@ def premarket(broker: str = "alpaca") -> None:
         print("[orchestrator] Premarket already ran today — skipping")
         return
 
+    # Pipeline counters for summary
+    _n_after_scan = _n_after_filters = 0
+    _dropped = _dropped_orb = _dropped_top = 0
+    _spy_pct: float | None = None
+    _candidates_sent: list = []
+    _trades_selected: list = []
+    _risk_rejected: list = []
+    _guard_rejected: list = []
+    _final: list = []
+    _claude_reasoning = ""
+    _mkt: dict = {}
+
     # Morning sweep — close any overnight Alpaca positions before trading begins
     if not _sweep_and_verify():
         return
@@ -434,11 +544,13 @@ def premarket(broker: str = "alpaca") -> None:
     # 2. Get market context
     print("\n[2] Fetching market context...")
     mkt = market_context.get()
+    _mkt = mkt
 
     # 3. Scan Pool 3 tickers
     print(f"\n[3] Scanning {len(pool3_tickers)} Pool 3 tickers...")
     candidates = run_scan(pool3_tickers, skip_volume_surge=True)
     print(f"    {len(candidates)} candidates after scan")
+    _n_after_scan = len(candidates)
 
     # Fallback: pool_filter already curated these names — if scanner finds no momentum
     # signal (common for blue chips on quiet days), pass pool_filter candidates directly
@@ -515,12 +627,37 @@ def premarket(broker: str = "alpaca") -> None:
             print(f"    Top-of-range filter: dropped {dropped_top} near-day-high candidate(s)")
 
         # SPY premarket gate — if SPY opened negative, reduce slots to avoid down-market momentum entries.
+        _n_after_filters = len(candidates)
         _spy_pct = intraday_sigs.get("SPY", {}).get("today_pct_change", None)
         if _spy_pct is not None and _spy_pct < 0:
             print(f"    ⚠️  SPY premarket: {_spy_pct:+.2f}% — market opened negative. Skipping today.")
             return
         elif _spy_pct is not None:
             print(f"    SPY premarket: {_spy_pct:+.2f}% ✅")
+
+    # 3.4 Persist premarket scan candidates for observability
+    _premarket_candidate_fields = [
+        "ticker", "technical_score", "current_price", "above_vwap", "vwap",
+        "rs_vs_spy", "today_pct_change", "volume_ratio", "atr_pct",
+        "above_orb", "signals", "sector", "pool",
+    ]
+    _premarket_candidates_slim = [
+        {k: c.get(k) for k in _premarket_candidate_fields} for c in candidates
+    ]
+    try:
+        db.insert("b_scan_results", {
+            "date":       str(date.today()),
+            "scan_type":  "premarket",
+            "scanned_at": datetime.utcnow().isoformat(),
+            "candidates": _premarket_candidates_slim,
+            "placed":     0,
+            "results": {
+                "pool3_count":  len(pool3_tickers),
+                "after_scan":   len(candidates),
+            },
+        })
+    except Exception as _e:
+        print(f"    [warn] Failed to save premarket scan row: {_e}")
 
     # 3.5 Earnings blackout + news intelligence
     ni_result   = news_intel.run(candidates)
@@ -538,14 +675,19 @@ def premarket(broker: str = "alpaca") -> None:
         candidates = candidates[:MAX_DAILY_ENTRIES]
         print(f"    Trade cap: top {MAX_DAILY_ENTRIES} candidates by score sent to Claude")
 
+    _candidates_sent = candidates
+
     # 4. Claude selects trades
     print("\n[4] Claude selecting trades...")
     result = strategy.select_trades(candidates, mkt, pool3_context, news_context=news_context_str)
     trades = result.get("trades", [])
+    _trades_selected  = trades
+    _claude_reasoning = result.get("reasoning", "")
 
     # 5. Risk validation
     print("\n[5] Risk validation...")
     approved, risk_rejected = risk.validate(trades)
+    _risk_rejected = risk_rejected
 
     # 5.5 Sector guard — backstop cap using SECTOR_MAP + yfinance fallback
     if approved:
@@ -568,6 +710,8 @@ def premarket(broker: str = "alpaca") -> None:
     # 6. Guardrails
     print("\n[6] Guardrails check...")
     final, guard_rejected = guardrails.check(approved, broker=broker)
+    _guard_rejected = guard_rejected
+    _final = final
 
     if not final and risk_rejected:
         halt_reason = "; ".join(risk_rejected)
@@ -630,6 +774,22 @@ def premarket(broker: str = "alpaca") -> None:
 
     print(f"\n✅ Premarket complete — {len(final)} trades | "
           f"Est. profit: ${sum(t.get('estimated_profit', 0) for t in final):.0f}")
+
+    _write_summary(_premarket_summary(
+        run_time         = datetime.now().strftime("%Y-%m-%d %H:%M ET"),
+        pool3_tickers    = pool3_tickers,
+        mkt              = mkt,
+        spy_pct          = _spy_pct,
+        n_after_scan     = _n_after_scan,
+        n_after_filters  = _n_after_filters,
+        n_sent_to_claude = len(_candidates_sent),
+        candidates_sent  = _candidates_sent,
+        trades_selected  = _trades_selected,
+        risk_rejected    = _risk_rejected,
+        guard_rejected   = _guard_rejected,
+        final            = _final,
+        claude_reasoning = _claude_reasoning,
+    ))
 
 
 def intraday(broker: str = "alpaca") -> None:

@@ -267,7 +267,8 @@ def _run_intraday_alpaca(spy_pct: float, daily_opened: int = 0):
          patch("orchestrator.open_positions", return_value=[]), \
          patch("agents.alpaca_broker.get_intraday_signals", return_value=spy_sig), \
          patch("scanner.intraday_momentum.scan", mock_momentum), \
-         patch("scanner.pool_filter.get_pool3_tickers", return_value=["AAPL", "MSFT"]):
+         patch("scanner.pool_filter.get_pool3_tickers", return_value=["AAPL", "MSFT"]), \
+         patch("orchestrator.MIN_SPY_MOVE_PCT", 0.003):
         mock_dt.utcnow.return_value = fake_now
         mock_dt.fromisoformat = real_dt.fromisoformat
         mock_date.today.return_value = real_date(2026, 5, 27)
