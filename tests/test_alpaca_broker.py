@@ -568,12 +568,13 @@ def test_place_orders_uses_limit_order_with_stop_price(mock_get, mock_quotes):
 
 @patch("agents.alpaca_broker.get_live_quotes")
 @patch("agents.alpaca_broker._get")
-def test_place_orders_uses_plan_price_on_wide_spread(mock_get, mock_quotes):
-    """Wide spread (>0.20%) must fall back to plan price, not skip the order."""
+def test_place_orders_wide_spread_uses_bid_anchored_stop(mock_get, mock_quotes):
+    """Wide spread (0.2–5%): limit = plan price, stop/target anchored to bid so stop < fill always."""
     import agents.alpaca_broker as broker_mod
-    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest, StopLossRequest
 
-    mock_quotes.return_value = {"AAPL": {"ask": 150.50, "bid": 150.00}}  # 0.33% spread
+    # ask=150.50, bid=150.00 → 0.33% spread (wide, not extreme)
+    mock_quotes.return_value = {"AAPL": {"ask": 150.50, "bid": 150.00}}
 
     filled = MagicMock()
     filled.id = "ord-456"
@@ -584,6 +585,7 @@ def test_place_orders_uses_plan_price_on_wide_spread(mock_get, mock_quotes):
     mock_broker.submit_order.return_value = MagicMock(id="ord-456")
     mock_broker.get_order_by_id.return_value = filled
 
+    # plan: entry=150, stop=147 (2% below entry), target=156 (4% above)
     trade = {
         "ticker": "AAPL", "shares": 10, "pool": 2, "action": "BUY",
         "entry_price": 150.0, "target_price": 156.0, "stop_loss": 147.0,
@@ -594,12 +596,39 @@ def test_place_orders_uses_plan_price_on_wide_spread(mock_get, mock_quotes):
         mock_db.insert.return_value = None
         result = broker_mod.place_orders([trade])
 
-    # Order must still be submitted (at plan price, not skipped)
     mock_broker.submit_order.assert_called()
     bracket_req = mock_broker.submit_order.call_args_list[0][0][0]
     assert isinstance(bracket_req, LimitOrderRequest)
-    # Plan entry_price used as limit (150.0)
+    # Limit must be plan entry price
     assert bracket_req.limit_price == pytest.approx(150.0, abs=0.01)
+    # Stop must be anchored to bid (150.00), not plan entry (150.0)
+    # plan_stop_pct = (150 - 147) / 150 = 0.02  →  stop = 150.00 * (1 - 0.02) = 147.00
+    stop_req = bracket_req.stop_loss
+    assert isinstance(stop_req, StopLossRequest)
+    assert stop_req.stop_price == pytest.approx(147.0, abs=0.02)
+
+
+@patch("agents.alpaca_broker.get_live_quotes")
+@patch("agents.alpaca_broker._get")
+def test_place_orders_extreme_spread_skips(mock_get, mock_quotes):
+    """Extreme spread (>5%) must skip the order — quote data is unreliable."""
+    import agents.alpaca_broker as broker_mod
+
+    # ask=150.0, bid=142.0 → 5.3% spread (extreme)
+    mock_quotes.return_value = {"AAPL": {"ask": 150.0, "bid": 142.0}}
+
+    mock_broker = mock_get.return_value
+    trade = {
+        "ticker": "AAPL", "shares": 10, "pool": 2, "action": "BUY",
+        "entry_price": 150.0, "target_price": 156.0, "stop_loss": 147.0,
+        "position_size": 1500, "confidence": "MEDIUM",
+    }
+
+    with patch("agents.alpaca_broker.db"):
+        result = broker_mod.place_orders([trade])
+
+    assert result == []
+    mock_broker.submit_order.assert_not_called()
 
 
 # ── hybrid_limit_price ────────────────────────────────────────────────────────

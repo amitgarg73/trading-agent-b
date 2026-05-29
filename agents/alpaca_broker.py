@@ -194,14 +194,22 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
             if qt:
                 limit_px = hybrid_limit_price(qt["ask"], qt["bid"])
                 if limit_px is None:
-                    # Wide spread — fall back to plan price rather than skipping.
-                    # Strategy agent already validated R:R; wide spread on earnings days
-                    # is normal for blue-chips and should not block entry.
                     spread_pct = (qt["ask"] - qt["bid"]) / qt["ask"] * 100
-                    print(f"[alpaca] {ticker} wide spread {spread_pct:.2f}% — using plan price {plan_ask:.2f}")
+                    if spread_pct > 5.0:
+                        # Extreme spread — quote data is unreliable (IEX stale, halt, etc.).
+                        # Cannot safely set stop; skip rather than risk immediate stop trigger.
+                        print(f"[alpaca] {ticker} extreme spread {spread_pct:.2f}% — skipping (bad quote data)")
+                        continue
+                    # Moderate wide spread (0.2–5%) — use plan price as limit but anchor
+                    # stop/target to the live bid. BUY limits fill at market price (≤ limit),
+                    # so the fill can land anywhere down to bid. Anchoring to bid guarantees
+                    # stop < fill and prevents the bracket from firing immediately on entry.
+                    plan_stop_pct   = (trade["entry_price"] - float(trade["stop_loss"]))   / trade["entry_price"]
+                    plan_target_pct = (float(trade["target_price"]) - trade["entry_price"]) / trade["entry_price"]
                     entry_price  = round(plan_ask, 2)
-                    stop_price   = round(float(trade["stop_loss"]), 2)
-                    target_price = round(float(trade["target_price"]), 2)
+                    stop_price   = round(qt["bid"] * (1 - plan_stop_pct), 2)
+                    target_price = round(qt["bid"] * (1 + plan_target_pct), 2)
+                    print(f"[alpaca] {ticker} wide spread {spread_pct:.2f}% — limit={entry_price:.2f} stop={stop_price:.2f} (bid-anchored)")
                 else:
                     # Anchor stop/target to the live limit price (not the stale plan price).
                     plan_stop_pct   = (trade["entry_price"] - float(trade["stop_loss"]))   / trade["entry_price"]
