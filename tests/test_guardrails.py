@@ -167,7 +167,7 @@ def test_atr_stop_accepted(mock_price, mock_bp, mock_traded):
     entry     = 100.00
     stop_pct  = 0.018          # 1.8% stop — wider than 0.67% formula
     stop      = round(entry * (1 - stop_pct), 2)
-    target    = round(entry * (1 + 0.04), 2)
+    target    = round(entry * (1 + TARGET_PCT), 2)
     shares    = 10
     profit    = round(shares * (target - entry), 2)
     loss      = round(shares * (entry - stop), 2)
@@ -194,7 +194,7 @@ def test_atr_stop_wrong_value_rejected(mock_price, mock_bp, mock_traded):
     # Deliberately wrong stop (doesn't match atr_stop_pct)
     trade = _make_trade(
         stop_loss=98.00,    # should be 98.20
-        target_price=round(entry * 1.04, 2),
+        target_price=round(entry * (1 + TARGET_PCT), 2),
         atr_stop_pct=stop_pct,
     )
     passed, rejected = check([trade])

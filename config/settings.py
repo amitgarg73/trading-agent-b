@@ -27,7 +27,7 @@ ATR_STOP_FLOOR       = 0.005      # P0: minimum 0.5% stop — never tighter than
 MAX_LOSS_DOLLARS     = 150        # P0: constant dollar risk per trade ($150)
 ORB_ATR_FLOOR        = 0.5        # P0: ORB/ATR ratio below this → choppy open → halve shares
 MIN_REWARD_RISK      = 1.4   # intraday 1% target / 0.67% stop = 1.49:1 — set below actual to give margin
-TARGET_PCT           = 0.04       # 4% ceiling — trail does the actual exit; ceiling only fires on straight-line rockets
+TARGET_PCT           = 0.08       # 8% ceiling — trail (1%) does the actual exit; ceiling is a safety net for strong rockets
 MAX_PER_SECTOR       = 2           # tighter sector limit — 25 stock universe
 DAILY_LOSS_PCT       = 0.01       # 1% of capital — daily net loss limit (realized + unrealized)
 DAILY_LOSS_LIMIT     = -(TOTAL_CAPITAL * DAILY_LOSS_PCT)  # -$500 at $50K capital
