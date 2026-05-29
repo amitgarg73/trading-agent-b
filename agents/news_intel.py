@@ -10,6 +10,7 @@ Two jobs:
 """
 from __future__ import annotations
 from typing import Optional
+import concurrent.futures
 import yfinance as yf
 from datetime import date, timedelta
 
@@ -75,19 +76,22 @@ def run(candidates: list[dict]) -> dict:
     tomorrow = today + timedelta(days=1)
 
     blackout_tickers = []
-    filtered         = []
+    filtered         = list(candidates)  # earnings blackout disabled for Strategy B
+    tickers          = [c["ticker"] for c in candidates]
     news_by_ticker   = {}
 
-    for c in candidates:
-        ticker = c["ticker"]
+    def _fetch(ticker: str) -> tuple[str, list[str]]:
+        return ticker, _get_news(ticker)
 
-        # Earnings blackout disabled for Strategy B
-
-        filtered.append(c)
-
-        headlines = _get_news(ticker)
-        if headlines:
-            news_by_ticker[ticker] = headlines
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(tickers), 20)) as pool:
+        futures = {pool.submit(_fetch, t): t for t in tickers}
+        for fut in concurrent.futures.as_completed(futures, timeout=30):
+            try:
+                ticker, headlines = fut.result(timeout=5)
+                if headlines:
+                    news_by_ticker[ticker] = headlines
+            except Exception:
+                pass  # one slow/failed ticker doesn't block the rest
 
     news_lines = []
     for ticker, headlines in news_by_ticker.items():
