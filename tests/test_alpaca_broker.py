@@ -773,3 +773,92 @@ def test_trail_backfill_skipped_when_not_in_alpaca(
     trail_calls = [c for c in submitted if "trailing" in str(c).lower() or
                    hasattr(c[0][0], "trail_percent")]
     assert len(trail_calls) == 0, "Trail must not be submitted if position not confirmed in Alpaca"
+
+
+# ── Manual trailing stop fallback ────────────────────────────────────────────
+
+def _pos_no_trail(entry=100.0, fill=100.0, shares=10, high_wm=115.0, stop=95.0, price=111.5):
+    """Position with no native trail active — high watermark set above entry."""
+    return {
+        "id":             "pos-manual",
+        "ticker":         "AAPL",
+        "shares":         shares,
+        "entry_price":    entry,
+        "fill_price":     fill,
+        "target_price":   120.0,
+        "stop_loss":      stop,
+        "high_watermark": high_wm,
+        "low_watermark":  fill,
+        "current_price":  price,
+        "unrealized_pnl": shares * (price - entry),
+        "trail_order_id": None,  # no native trail
+        "status":         "OPEN",
+    }
+
+
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker._close_position")
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_manual_trail_fires_when_no_native_trail(
+    mock_price, mock_update, mock_select, mock_get, mock_signals, mock_close
+):
+    """When trail_order_id is None and price drops > TRAIL_PCT from peak, MANUAL_TRAIL fires."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    # Peak = 115.0, TRAIL_PCT = 1% → eff_stop = 115.0 * 0.99 = 113.85
+    # price = 113.0 < 113.85 and price > stop (95.0) → should fire
+    pos = _pos_no_trail(high_wm=115.0, stop=95.0, price=113.0)
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 113.0
+
+    update_positions_intraday()
+
+    mock_close.assert_called_once()
+    assert mock_close.call_args[0][2] == "MANUAL_TRAIL"
+
+
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker._close_position")
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_manual_trail_does_not_fire_when_native_trail_active(
+    mock_price, mock_update, mock_select, mock_get, mock_signals, mock_close
+):
+    """When trail_order_id is set, manual trail must not fire (Alpaca handles it)."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    pos = _pos_no_trail(high_wm=115.0, stop=95.0, price=113.0)
+    pos["trail_order_id"] = "trail-active-abc"  # native trail is live
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 113.0
+
+    update_positions_intraday()
+
+    mock_close.assert_not_called()
+
+
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker._close_position")
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_manual_trail_does_not_fire_above_eff_stop(
+    mock_price, mock_update, mock_select, mock_get, mock_signals, mock_close
+):
+    """Price above eff_stop — manual trail must not fire."""
+    mock_get.return_value = _alpaca_mock_with_open("AAPL")
+    # Peak = 115.0, eff_stop = 113.85; price = 114.5 > 113.85 → no fire
+    pos = _pos_no_trail(high_wm=115.0, stop=95.0, price=114.5)
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 114.5
+
+    update_positions_intraday()
+
+    mock_close.assert_not_called()

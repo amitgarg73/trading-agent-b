@@ -593,6 +593,16 @@ def update_positions_intraday() -> dict:
                 close_reason = "VWAP_BREAK"
                 print(f"  📉 VWAP break: {ticker} ${price:.2f} < VWAP ${vwap:.2f} — exiting")
 
+        # Manual trailing stop fallback — only when no native trail is active.
+        # Mirrors Strategy A's high-watermark tracking. Fires if price pulls back
+        # from the session peak by more than TRAIL_PCT, provided it's above the
+        # hard stop (hard stop handles the floor; this handles the trailing exit).
+        if not close_reason and not pos.get("trail_order_id"):
+            eff_stop = max(stop, round(new_watermark * (1 - TRAIL_PCT), 4))
+            if price <= eff_stop and price > stop:
+                close_reason = "MANUAL_TRAIL"
+                print(f"  📉 Manual trail: {ticker} ${price:.2f} ≤ eff_stop ${eff_stop:.2f} (peak ${new_watermark:.2f})")
+
         # Hard stop — safety net; native trail bracket should fire first
         if not close_reason and price <= stop:
             close_reason = "STOP"
