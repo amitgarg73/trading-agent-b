@@ -214,19 +214,21 @@ def _score_ticker(ticker: str, skip_volume_surge: bool = False) -> dict | None:
     if momentum_5d > 3:
         score += 1; signals.append(f"5d momentum +{momentum_5d:.1f}%")
 
-    if abs(score) < SCORE_THRESHOLD:
+    if score < SCORE_THRESHOLD:
         return None
 
     behavioral = _behavioral_score(ticker, df, info)
     total_score = score + behavioral["behavior_score"]
 
-    if abs(total_score) < SCORE_THRESHOLD:
+    if total_score < SCORE_THRESHOLD:
         return None
 
-    # ATR quality gate — skip stocks too volatile for ATR sizer to produce viable R:R
+    # ATR gate — skip stocks too volatile for ATR sizer R:R math.
+    # Use 2× the setting so momentum/earnings movers aren't blocked; ATR sizer
+    # will handle position sizing and will skip trades where R:R < MIN_REWARD_RISK.
     atr_abs = behavioral["atr"]
     atr_pct = round(atr_abs / cur_price * 100, 2) if (atr_abs and cur_price > 0) else 0.0
-    if atr_pct > MAX_ATR_PCT:
+    if atr_pct > MAX_ATR_PCT * 2:
         return None
 
     return {

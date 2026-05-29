@@ -548,19 +548,26 @@ def premarket(broker: str = "alpaca") -> None:
 
     # 3. Scan Pool 3 tickers
     print(f"\n[3] Scanning {len(pool3_tickers)} Pool 3 tickers...")
-    candidates = run_scan(pool3_tickers, skip_volume_surge=True)
-    print(f"    {len(candidates)} candidates after scan")
-    _n_after_scan = len(candidates)
+    scanner_results = run_scan(pool3_tickers, skip_volume_surge=True)
+    scanned_tickers = {c["ticker"] for c in scanner_results}
+    print(f"    {len(scanner_results)} scanner candidates")
+    _n_after_scan = len(scanner_results)
 
-    # Fallback: pool_filter already curated these names — if scanner finds no momentum
-    # signal (common for blue chips on quiet days), pass pool_filter candidates directly
-    # so Claude can still make selections. ATR sizer will use formula stops (no atr_pct).
-    if not candidates:
-        candidates = [
-            {**c, "technical_score": 0, "signals": ["pool3_fallback"]}
-            for c in pool3_context
-        ]
-        print(f"    No scanner signals → using {len(candidates)} pool_filter candidates (fallback)")
+    # Merge scanner hits with pool_filter context for tickers the scanner missed.
+    # Pool_filter already scored and curated these tickers with live Alpaca data;
+    # the scanner may drop them due to yfinance rate limits or the ATR gate.
+    # Scanner results win (they carry richer technical detail); pool_filter fills gaps.
+    pool3_missed = [
+        {**c, "technical_score": 0, "signals": ["pool3_context"],
+         "current_price": c.get("cur_price")}  # normalize field name for live price update
+        for c in pool3_context
+        if c["ticker"] not in scanned_tickers
+    ]
+    candidates = scanner_results + pool3_missed
+    if pool3_missed:
+        print(f"    Pool3 fill-in: {len(pool3_missed)} tickers scanner missed → {len(candidates)} total")
+    else:
+        print(f"    Scanner covered all pool3 tickers → {len(candidates)} candidates")
 
     # 3.2 Live price refresh + VWAP enrichment via Alpaca snapshot (batch call)
     if broker == "alpaca":
