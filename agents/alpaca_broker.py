@@ -583,6 +583,12 @@ def close_all_positions(reason: str = "EOD") -> list[dict]:
     db_tickers = {p["ticker"] for p in positions}
     try:
         broker = _get()
+        # Cancel all open orders before sweep — bracket legs hold qty and block market close
+        try:
+            broker.cancel_orders()
+            time.sleep(8)
+        except Exception as _ce:
+            print(f"[alpaca] cancel_orders in sweep: {_ce}")
         from datetime import timezone, timedelta
         two_days_ago = (datetime.utcnow() - timedelta(days=2)).replace(tzinfo=timezone.utc)
         recent = broker.get_orders(GetOrdersRequest(
