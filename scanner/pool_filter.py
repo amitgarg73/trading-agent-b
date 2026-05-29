@@ -177,8 +177,9 @@ def _prefetch_batch(tickers: list[str]) -> None:
     try:
         resp = _dclient().get_stock_bars(
             StockBarsRequest(symbol_or_symbols=list(tickers), timeframe=TimeFrame.Day, limit=22)
-        ) or {}
-        for ticker, bar_list in resp.items():
+        )
+        bars_dict = resp.data if hasattr(resp, "data") else (dict(resp) if resp else {})
+        for ticker, bar_list in bars_dict.items():
             vols = [float(getattr(b, "volume", 0) or 0) for b in bar_list]
             if len(vols) >= 2:
                 # Exclude today's partial bar from the average
@@ -200,8 +201,9 @@ def _prefetch_batch(tickers: list[str]) -> None:
                     timeframe=TimeFrame(5, TimeFrameUnit.Minute),
                     start=start_utc,
                 )
-            ) or {}
-            for ticker, bar_list in resp.items():
+            )
+            bars_dict = resp.data if hasattr(resp, "data") else (dict(resp) if resp else {})
+            for ticker, bar_list in bars_dict.items():
                 rows = [
                     {
                         "open":   float(getattr(b, "open",   0) or 0),
