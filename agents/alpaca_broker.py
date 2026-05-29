@@ -188,24 +188,30 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
 
         try:
             # Fetch live bid/ask at submission time and compute best limit price.
-            # Tight spread (<0.1%) → mid saves half the spread; wide (>0.2%) → skip.
+            # Tight spread (<0.1%) → bid; moderate (0.1–0.2%) → mid; wide (>0.2%) → plan price.
             qt = get_live_quotes([ticker]).get(ticker)
             plan_ask = float(trade["entry_price"])
             if qt:
                 limit_px = hybrid_limit_price(qt["ask"], qt["bid"])
                 if limit_px is None:
+                    # Wide spread — fall back to plan price rather than skipping.
+                    # Strategy agent already validated R:R; wide spread on earnings days
+                    # is normal for blue-chips and should not block entry.
                     spread_pct = (qt["ask"] - qt["bid"]) / qt["ask"] * 100
-                    print(f"[alpaca] {ticker} wide spread {spread_pct:.2f}% — skipping")
-                    continue
-                # Anchor stop/target to the live limit price (not the stale plan price).
-                plan_stop_pct   = (trade["entry_price"] - float(trade["stop_loss"]))   / trade["entry_price"]
-                plan_target_pct = (float(trade["target_price"]) - trade["entry_price"]) / trade["entry_price"]
-                entry_price  = limit_px
-                stop_price   = round(limit_px * (1 - plan_stop_pct), 2)
-                target_price = round(limit_px * (1 + plan_target_pct), 2)
-                if limit_px < qt["ask"]:
-                    saved = round((qt["ask"] - limit_px) * shares, 2)
-                    print(f"[alpaca] {ticker} mid-price limit: ask={qt['ask']:.2f} limit={limit_px:.2f} saves ~${saved:.2f}")
+                    print(f"[alpaca] {ticker} wide spread {spread_pct:.2f}% — using plan price {plan_ask:.2f}")
+                    entry_price  = round(plan_ask, 2)
+                    stop_price   = round(float(trade["stop_loss"]), 2)
+                    target_price = round(float(trade["target_price"]), 2)
+                else:
+                    # Anchor stop/target to the live limit price (not the stale plan price).
+                    plan_stop_pct   = (trade["entry_price"] - float(trade["stop_loss"]))   / trade["entry_price"]
+                    plan_target_pct = (float(trade["target_price"]) - trade["entry_price"]) / trade["entry_price"]
+                    entry_price  = limit_px
+                    stop_price   = round(limit_px * (1 - plan_stop_pct), 2)
+                    target_price = round(limit_px * (1 + plan_target_pct), 2)
+                    if limit_px < qt["ask"]:
+                        saved = round((qt["ask"] - limit_px) * shares, 2)
+                        print(f"[alpaca] {ticker} mid-price limit: ask={qt['ask']:.2f} limit={limit_px:.2f} saves ~${saved:.2f}")
             else:
                 entry_price  = round(plan_ask, 2)
                 stop_price   = round(float(trade["stop_loss"]), 2)
@@ -286,7 +292,9 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
             time.sleep(0.3)
 
         except Exception as e:
+            import traceback
             print(f"[alpaca] Failed to place {ticker}: {e}")
+            traceback.print_exc()
 
     return placed
 
