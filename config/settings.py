@@ -72,7 +72,7 @@ INTRADAY_SCAN_MAX_RUNS          = 6    # hourly: 10 AM, 11 AM, 12 PM, 1 PM, 2 PM
 INTRADAY_SCAN_MIN_INTERVAL_MINS = 55   # ~1 hr apart (55 min absorbs GH Actions delay)
 INTRADAY_TARGET_PCT             = 0.01
 MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal)
-MIN_SPY_MOVE_PCT                = 0.003  # SPY must be up ≥0.3% for intraday entries — blocks flat/down market scans
+MIN_SPY_MOVE_PCT                = 0.0    # SPY gate disabled — no minimum SPY move required for intraday entries
 STRONG_SECTOR_THRESHOLD         = 2.0   # sector ETF up >= this % overrides SPY gate on rotation days
 
 # Pool system thresholds
