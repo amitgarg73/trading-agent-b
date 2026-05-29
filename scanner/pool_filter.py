@@ -172,11 +172,18 @@ def _prefetch_batch(tickers: list[str]) -> None:
     except Exception as e:
         print(f"[pool_filter] snapshot batch failed: {e}")
 
-    # --- Call 2: 22 daily bars for 20-day avg volume ---
+    # --- Call 2: 30 calendar days of daily bars for 20-day avg volume ---
     daily_avgs: dict[str, float] = {}
     try:
+        from datetime import timedelta
+        hist_start = (datetime.now(_ET) - timedelta(days=35)).date().isoformat()
         resp = _dclient().get_stock_bars(
-            StockBarsRequest(symbol_or_symbols=list(tickers), timeframe=TimeFrame.Day, limit=22)
+            StockBarsRequest(
+                symbol_or_symbols=list(tickers),
+                timeframe=TimeFrame.Day,
+                start=hist_start,
+                limit=len(tickers) * 26,  # total bars across all tickers (25 bars × N tickers)
+            )
         )
         bars_dict = resp.data if hasattr(resp, "data") else (dict(resp) if resp else {})
         for ticker, bar_list in bars_dict.items():
