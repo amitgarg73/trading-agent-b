@@ -260,7 +260,7 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
             if not order_accepted:
                 # Order still pending — write to DB so intraday monitoring tracks it.
                 # Passive bid/mid limit orders can take minutes to fill; 15s is not enough.
-                # fill_price and trail will be backfilled when the position monitor detects the fill.
+                # Trail will be submitted on the next intraday cycle once fill is confirmed.
                 print(f"[alpaca] {ticker} limit pending after 15s — recording for intraday reconcile")
 
             if fill_price:
@@ -319,7 +319,12 @@ def submit_trailing_stop(ticker: str, shares: int, trail_pct: float) -> str | No
         order = _get().submit_order(req)
         return str(order.id)
     except Exception as e:
-        print(f"        ⚠️  Trailing stop submission failed for {ticker}: {e}")
+        err = str(e)
+        if "insufficient qty" in err or "40310000" in err:
+            # Bracket legs are still holding the shares — bracket covers this position.
+            print(f"  [trail] {ticker} shares held by bracket legs — trail skipped, bracket covers")
+        else:
+            print(f"  [trail] ⚠️  Trail submission failed for {ticker}: {e}")
         return None
 
 
@@ -498,6 +503,20 @@ def update_positions_intraday() -> dict:
     positions = open_positions()
     if not positions:
         return {"checked": 0, "closed": []}
+
+    # Backfill trailing stops for confirmed-filled positions that have none.
+    # Bracket legs are TimeInForce.DAY — they expire at EOD. Multi-day positions
+    # lose both bracket and trail protection after day 1. Detect and resubmit here.
+    if USE_NATIVE_TRAILING_STOP:
+        alpaca_open = get_open_tickers()
+        for pos in positions:
+            if (pos.get("trail_order_id") is None
+                    and pos.get("fill_price") is not None
+                    and pos["ticker"] in alpaca_open):
+                trail_id = submit_trailing_stop(pos["ticker"], int(pos["shares"]), TRAIL_PCT)
+                if trail_id:
+                    db.update("b_positions", {"id": pos["id"]}, {"trail_order_id": trail_id})
+                    print(f"  [trail] Backfilled trail for {pos['ticker']}: {trail_id[:8]}")
 
     today_realized = sum(
         r.get("realized_pnl") or 0

@@ -103,9 +103,11 @@ def test_low_watermark_updates_when_price_drops(mock_price, mock_update, mock_se
 
     update_positions_intraday()
 
-    # First db.update call is always the watermark update — check it
-    first_update_kwargs = mock_update.call_args_list[0][0][2]
-    assert first_update_kwargs["low_watermark"] == 97.5
+    # Backfill trail may add an update before the watermark update — find it by content
+    watermark_calls = [c for c in mock_update.call_args_list
+                       if "low_watermark" in c[0][2]]
+    assert watermark_calls, "Expected a db.update call with low_watermark"
+    assert watermark_calls[0][0][2]["low_watermark"] == 97.5
 
 
 @patch("agents.alpaca_broker.get_intraday_signals", return_value={})
@@ -122,8 +124,10 @@ def test_high_watermark_updates_when_price_rises(mock_price, mock_update, mock_s
 
     update_positions_intraday()
 
-    update_kwargs = mock_update.call_args[0][2]
-    assert update_kwargs["high_watermark"] == 103.0
+    watermark_calls = [c for c in mock_update.call_args_list
+                       if "high_watermark" in c[0][2]]
+    assert watermark_calls, "Expected a db.update call with high_watermark"
+    assert watermark_calls[0][0][2]["high_watermark"] == 103.0
 
 
 # ── Reconciliation: UNFILLED detection ───────────────────────────────────────
@@ -220,8 +224,9 @@ def test_low_watermark_never_rises(mock_price, mock_update, mock_select, mock_ge
 
     update_positions_intraday()
 
-    update_kwargs = mock_update.call_args[0][2]
-    assert update_kwargs["low_watermark"] == 96.0   # stays at the prior low
+    watermark_calls = [c for c in mock_update.call_args_list if "low_watermark" in c[0][2]]
+    assert watermark_calls, "Expected a db.update with low_watermark"
+    assert watermark_calls[0][0][2]["low_watermark"] == 96.0   # stays at the prior low
 
 
 # ── R-multiple stop ladder tests ──────────────────────────────────────────────
@@ -242,8 +247,9 @@ def test_r_ladder_moves_stop_to_breakeven_at_1R(mock_price, mock_update, mock_se
 
     update_positions_intraday()
 
-    first_kwargs = mock_update.call_args_list[0][0][2]
-    assert first_kwargs.get("stop_loss") == 100.0   # breakeven
+    stop_calls = [c for c in mock_update.call_args_list if "stop_loss" in c[0][2]]
+    assert stop_calls, "Expected a db.update with stop_loss for +1R breakeven"
+    assert stop_calls[0][0][2]["stop_loss"] == 100.0   # breakeven
 
 
 @patch("agents.alpaca_broker.get_intraday_signals", return_value={})
@@ -261,8 +267,9 @@ def test_r_ladder_moves_stop_to_entry_plus_r_at_2R(mock_price, mock_update, mock
 
     update_positions_intraday()
 
-    first_kwargs = mock_update.call_args_list[0][0][2]
-    assert first_kwargs.get("stop_loss") == 105.0   # entry + R
+    stop_calls = [c for c in mock_update.call_args_list if "stop_loss" in c[0][2]]
+    assert stop_calls, "Expected a db.update with stop_loss for +2R ratchet"
+    assert stop_calls[0][0][2]["stop_loss"] == 105.0   # entry + R
 
 
 @patch("agents.alpaca_broker.get_intraday_signals", return_value={})
@@ -659,3 +666,110 @@ def test_hybrid_zero_ask_returns_none():
 def test_hybrid_ask_less_than_bid_returns_ask():
     result = hybrid_limit_price(99.0, 100.0)
     assert result == round(99.0, 2)
+
+
+# ── Trail backfill in update_positions_intraday ───────────────────────────────
+
+def _open_pos_no_trail(ticker="ORCL", fill=203.24, entry=203.24, shares=34):
+    return {
+        "id": "pos-orcl",
+        "ticker": ticker,
+        "shares": shares,
+        "entry_price": entry,
+        "fill_price": fill,
+        "target_price": 226.0,
+        "stop_loss": 211.60,
+        "high_watermark": 223.94,
+        "low_watermark": fill,
+        "current_price": 222.0,
+        "unrealized_pnl": shares * (222.0 - entry),
+        "trail_order_id": None,
+        "status": "OPEN",
+    }
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_trail_backfill_submitted_for_filled_position(
+    mock_get, mock_db, mock_price, mock_signals
+):
+    """Confirmed-filled position with no trail_order_id gets a trail submitted on next cycle."""
+    pos = _open_pos_no_trail()
+
+    # Alpaca has the position open
+    alpaca_pos = MagicMock(); alpaca_pos.symbol = "ORCL"
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+
+    trail_order = MagicMock(); trail_order.id = "trail-abc-123"
+    mock_get.return_value.submit_order.return_value = trail_order
+
+    mock_db.select.return_value = [pos]
+    mock_db.update.return_value = None
+
+    update_positions_intraday()
+
+    # Trail should have been submitted
+    submitted = mock_get.return_value.submit_order.call_args_list
+    trail_calls = [c for c in submitted if "trailing" in str(c).lower() or
+                   hasattr(c[0][0], "trail_percent")]
+    assert len(trail_calls) >= 1, "Expected trailing stop to be submitted for unfilled trail position"
+
+    # DB should be updated with trail_order_id
+    update_calls = [c for c in mock_db.update.call_args_list
+                    if "trail_order_id" in str(c)]
+    assert len(update_calls) >= 1, "Expected DB update with trail_order_id"
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_trail_backfill_skipped_for_unfilled_position(
+    mock_get, mock_db, mock_price, mock_signals
+):
+    """Position with fill_price=None (entry not confirmed) does NOT get a trail submitted."""
+    pos = _open_pos_no_trail(fill=None)
+
+    alpaca_pos = MagicMock(); alpaca_pos.symbol = "ORCL"
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+    mock_db.select.return_value = [pos]
+
+    update_positions_intraday()
+
+    # Trail must NOT be submitted for unfilled positions
+    submitted = mock_get.return_value.submit_order.call_args_list
+    trail_calls = [c for c in submitted if "trailing" in str(c).lower() or
+                   hasattr(c[0][0], "trail_percent")]
+    assert len(trail_calls) == 0, "Trail must not be submitted for unconfirmed-fill position"
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_trail_backfill_skipped_when_not_in_alpaca(
+    mock_get, mock_db, mock_price, mock_signals
+):
+    """Filled position not in Alpaca open positions does not get a trail (may be exiting)."""
+    pos = _open_pos_no_trail()
+
+    mock_get.return_value.get_all_positions.return_value = []  # empty — not in Alpaca
+    mock_get.return_value.get_orders.return_value = []
+    mock_db.select.return_value = [pos]
+
+    update_positions_intraday()
+
+    submitted = mock_get.return_value.submit_order.call_args_list
+    trail_calls = [c for c in submitted if "trailing" in str(c).lower() or
+                   hasattr(c[0][0], "trail_percent")]
+    assert len(trail_calls) == 0, "Trail must not be submitted if position not confirmed in Alpaca"
