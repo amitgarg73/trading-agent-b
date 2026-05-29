@@ -244,17 +244,17 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                     pass
 
             if not order_accepted:
-                print(f"[alpaca] {ticker} — could not confirm fill after 15s, skipping DB write")
-                continue  # don't write a phantom position
+                # Order still pending — write to DB so intraday monitoring tracks it.
+                # Passive bid/mid limit orders can take minutes to fill; 15s is not enough.
+                # fill_price and trail will be backfilled when the position monitor detects the fill.
+                print(f"[alpaca] {ticker} limit pending after 15s — recording for intraday reconcile")
 
             if fill_price:
                 slippage_bps = round(abs(fill_price - entry_price) / entry_price * 10_000, 1)
                 print(f"[alpaca] {ticker} fill=${fill_price:.2f} limit=${entry_price:.2f} slip={slippage_bps}bps")
-            else:
-                fill_price = entry_price
 
             trail_order_id = None
-            if USE_NATIVE_TRAILING_STOP:
+            if order_accepted and USE_NATIVE_TRAILING_STOP:
                 trail_order_id = submit_trailing_stop(ticker=ticker, shares=shares, trail_pct=TRAIL_PCT)
                 if trail_order_id:
                     print(f"[alpaca] Trail stop active: {ticker} {TRAIL_PCT*100:.1f}% → {trail_order_id}")
@@ -273,8 +273,8 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                 "position_size":   trade["position_size"],
                 "status":          "OPEN",
                 "alpaca_order_id": str(order.id),
-                "high_watermark":  fill_price,
-                "low_watermark":   fill_price,
+                "high_watermark":  fill_price or entry_price,
+                "low_watermark":   fill_price or entry_price,
                 "run_id":          run_id,
             }
             if trail_order_id:
