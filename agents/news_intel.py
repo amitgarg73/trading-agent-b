@@ -11,6 +11,8 @@ Two jobs:
 from __future__ import annotations
 from typing import Optional
 import concurrent.futures
+import contextlib
+import io
 import yfinance as yf
 from datetime import date, timedelta
 
@@ -18,8 +20,10 @@ from datetime import date, timedelta
 def _get_earnings_date(ticker: str) -> Optional[date]:
     """Return next earnings date for ticker, or None if unknown."""
     try:
-        t = yf.Ticker(ticker)
-        cal = t.calendar
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            t = yf.Ticker(ticker)
+            cal = t.calendar
         if cal is None:
             return None
         if hasattr(cal, 'columns'):
@@ -41,7 +45,9 @@ def _get_earnings_date(ticker: str) -> Optional[date]:
 def _get_news(ticker: str, max_headlines: int = 3) -> list[str]:
     """Return recent news headlines for a ticker."""
     try:
-        news = yf.Ticker(ticker).news or []
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            news = yf.Ticker(ticker).news or []
         return [
             item.get('title') or item.get('headline', '')
             for item in news[:max_headlines]
