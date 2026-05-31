@@ -2,7 +2,8 @@ name: Health Check
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5'   # 9:00 AM ET — pre-open check
+    - cron: '0 13 * * 1-5'    # 09:00 ET — pre-open: connectivity + stale positions + yesterday's EOD
+    - cron: '30 20 * * 1-5'   # 16:30 ET — post-EOD: today's EOD ran + no stale positions remain
   workflow_dispatch:
 
 jobs:
@@ -21,8 +22,12 @@ jobs:
 
       - name: Health check
         env:
-          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
-          ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          ALPACA_API_KEY:     ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
+          NTFY_TOPIC:         ${{ secrets.NTFY_TOPIC }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL:        ${{ secrets.ALERT_EMAIL }}
         run: python health_check.py
