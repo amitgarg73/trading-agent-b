@@ -249,44 +249,43 @@ def _today_realized_pnl() -> float:
 
 def _fetch_atr_for_tickers(tickers: list[str]) -> dict[str, float | None]:
     """
-    Batch-fetch 14-day ATR% for a small set of tickers via yfinance.
+    Batch-fetch 14-day ATR% for a small set of tickers via Alpaca daily bars.
     Returns {ticker: atr_pct} — None for any ticker that fails.
     Used by intraday ATR sizer so stops survive normal intraday noise.
     """
-    import yfinance as yf
-    import pandas as pd
+    from datetime import datetime, timedelta
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from agents.alpaca_broker import _dclient as get_data_client
 
     if not tickers:
         return {}
 
     result: dict[str, float | None] = {t: None for t in tickers}
+    end   = datetime.utcnow()
+    start = end - timedelta(days=28)
     try:
-        raw = yf.download(
-            tickers,
-            period="20d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-            group_by="ticker",
-        )
+        req  = StockBarsRequest(symbol_or_symbols=tickers, timeframe=TimeFrame.Day,
+                                start=start, end=end)
+        bars = get_data_client().get_stock_bars(req).data
         for ticker in tickers:
             try:
-                hist = raw[ticker] if len(tickers) > 1 else raw
-                hist = hist.dropna(subset=["Close"])
-                if len(hist) < 10:
+                ticker_bars = bars.get(ticker) or []
+                if len(ticker_bars) < 10:
                     continue
-                h, l, c   = hist["High"], hist["Low"], hist["Close"]
-                prev_c    = c.shift(1)
-                tr        = (h - l).abs().combine((h - prev_c).abs(), max).combine((l - prev_c).abs(), max)
-                atr       = float(tr.iloc[-14:].mean())
-                price     = float(c.iloc[-1])
+                records = [{"h": b.high, "l": b.low, "c": b.close} for b in ticker_bars[-20:]]
+                trs = []
+                for i in range(1, len(records)):
+                    h, l, prev_c = records[i]["h"], records[i]["l"], records[i - 1]["c"]
+                    trs.append(max(h - l, abs(h - prev_c), abs(l - prev_c)))
+                atr   = sum(trs[-14:]) / min(14, len(trs))
+                price = records[-1]["c"]
                 if price > 0:
                     result[ticker] = round(atr / price * 100, 2)
             except Exception:
                 pass
     except Exception as e:
-        print(f"  [atr_fetch] yfinance batch failed: {e}")
+        print(f"  [atr_fetch] Alpaca batch failed: {e}")
 
     for t, v in result.items():
         if v is None:
