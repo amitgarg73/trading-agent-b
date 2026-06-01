@@ -10,12 +10,15 @@ P0-2: If first-30-min opening range < 0.5 × ATR, the open was choppy (no
       directional conviction). Halve shares for those names.
 
 Trades where ATR stop ≥ target (R:R < 1) are dropped and returned as reasons.
+Trades where the ATR-adjusted R:R falls below min_rr are also dropped — risk
+validated the original prices; if ATR widens the stop below the floor, the trade
+is not viable and should not be placed.
 """
 from __future__ import annotations
 import yfinance as yf
 from config.settings import (
     ATR_STOP_MULTIPLIER, ATR_STOP_FLOOR, MAX_LOSS_DOLLARS,
-    ORB_ATR_FLOOR, POSITION_SIZE_BY_CONFIDENCE,
+    ORB_ATR_FLOOR, POSITION_SIZE_BY_CONFIDENCE, MIN_REWARD_RISK,
 )
 
 _orb_cache: dict[str, float | None] = {}
@@ -47,12 +50,17 @@ def _fetch_orb_pct(ticker: str, entry: float) -> float | None:
         return None
 
 
+_MIN_POSITION_SIZE = float(min(POSITION_SIZE_BY_CONFIDENCE.values()))
+
+
 def apply(trades: list[dict],
-          candidates_atr: dict[str, float | None]) -> tuple[list[dict], list[str]]:
+          candidates_atr: dict[str, float | None],
+          min_rr: float = MIN_REWARD_RISK) -> tuple[list[dict], list[str]]:
     """
     Apply ATR-based stop and ORB gate to approved trades.
 
     candidates_atr: ticker → atr_pct (percentage, e.g. 1.5 means 1.5%)
+    min_rr: minimum R:R after ATR adjustment — pass QUIET_DAY_MIN_REWARD_RISK on quiet days.
     Returns (adjusted_trades, dropped_reasons).
     Trades with no ATR data pass through unchanged.
     """
@@ -108,6 +116,19 @@ def apply(trades: list[dict],
             f"R:R {rr:.2f}"
             + (" [ORB choppy — halved]" if choppy else "")
         )
+
+        # Re-enforce constraints after stop adjustment — risk validated original prices;
+        # if ATR widens the stop, R:R and size may fall below minimums.
+        if rr < min_rr:
+            reason = f"{ticker}: R:R {rr:.2f} below {min_rr} after ATR stop — dropped"
+            print(f"  [atr_sizer] {reason}")
+            dropped.append(reason)
+            continue
+        if position_size < _MIN_POSITION_SIZE:
+            reason = f"{ticker}: size ${position_size:,.0f} below min ${_MIN_POSITION_SIZE:,.0f} after ATR sizing — dropped"
+            print(f"  [atr_sizer] {reason}")
+            dropped.append(reason)
+            continue
 
         adjusted.append({
             **t,
