@@ -92,13 +92,13 @@ The current ET time is provided in the user message. Adjust selectivity based on
       "pool": 2,
       "action": "BUY",
       "entry_price": 185.00,
-      "target_price": 188.70,
+      "target_price": 199.80,
       "stop_loss": 183.76,
       "position_size": 7000,
       "shares": 37,
-      "estimated_profit": 136.90,
+      "estimated_profit": 547.60,
       "max_loss": 45.88,
-      "reward_risk": 2.98,
+      "reward_risk": 11.94,
       "confidence": "HIGH",
       "reasoning": "Above VWAP, leading XLK by 1.8x, volume 2.1x average, RSI recovering from oversold"
     }}

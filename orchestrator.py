@@ -204,8 +204,8 @@ from config.settings import (
     MAX_POSITIONS, MAX_DAILY_ENTRIES, DAILY_BONUS_TARGET, DAILY_LOSS_LIMIT,
     INTRADAY_SCAN_UTC_START, INTRADAY_SCAN_UTC_END, INTRADAY_ENTRY_CUTOFF_UTC,
     INTRADAY_SCAN_MAX_RUNS, INTRADAY_SCAN_MIN_INTERVAL_MINS,
-    INTRADAY_TARGET_PCT, MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT,
-    TARGET_PCT, MAX_LOSS_PER_TRADE,
+    MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT,
+    TARGET_PCT, MAX_LOSS_PER_TRADE, TRAIL_PCT,
 )
 
 
@@ -245,23 +245,6 @@ def _today_realized_pnl() -> float:
         if r.get("close_reason") not in ("CLEANUP", "UNFILLED")
     )
 
-
-def _cap_intraday_targets(trades: list[dict]) -> list[dict]:
-    """Cap target_price at INTRADAY_TARGET_PCT (1%) for intraday entries."""
-    result = []
-    for t in trades:
-        entry      = float(t["entry_price"])
-        max_target = round(entry * (1 + INTRADAY_TARGET_PCT), 2)
-        if float(t.get("target_price", 0)) > max_target:
-            shares   = int(t.get("shares", 0))
-            profit   = round(shares * (max_target - entry), 2)
-            stop     = float(t.get("stop_loss", entry))
-            max_loss = round(shares * (entry - stop), 2)
-            rr       = round(profit / max_loss, 2) if max_loss > 0 else 0
-            t = {**t, "target_price": max_target,
-                 "estimated_profit": profit, "reward_risk": rr}
-        result.append(t)
-    return result
 
 
 def _fetch_atr_for_tickers(tickers: list[str]) -> dict[str, float | None]:
@@ -453,8 +436,8 @@ def _maybe_run_intraday_scan(broker: str) -> None:
             **mkt,
             "note": (
                 f"INTRADAY SCAN #{run_num}: Focus on Pool 3 momentum plays already moving today. "
-                f"Use standard {TARGET_PCT*100:.0f}% targets — these will be capped at "
-                f"{INTRADAY_TARGET_PCT*100:.0f}% after selection."
+                f"Use standard {TARGET_PCT*100:.0f}% targets. "
+                f"The trailing stop ({TRAIL_PCT*100:.0f}%) is the real exit; the target is a safety ceiling."
             ),
         }
 
@@ -464,9 +447,6 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         if not trades:
             _save_intraday_scan(today, now_utc, {"candidates": len(candidates), "trades": 0})
             return
-
-        # Cap targets at 1% — less time remaining in day = smaller achievable target
-        trades = _cap_intraday_targets(trades)
 
         approved, _rejected = risk.validate(trades)
         if not approved:
