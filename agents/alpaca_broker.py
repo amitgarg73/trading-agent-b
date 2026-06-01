@@ -269,6 +269,7 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
 
             trail_order_id = None
             if order_accepted and USE_NATIVE_TRAILING_STOP:
+                _cancel_bracket_stop_leg(str(order.id))
                 trail_order_id = submit_trailing_stop(ticker=ticker, shares=shares, trail_pct=TRAIL_PCT)
                 if trail_order_id:
                     print(f"[alpaca] Trail stop active: {ticker} {TRAIL_PCT*100:.1f}% → {trail_order_id}")
@@ -333,6 +334,22 @@ def cancel_order(order_id: str) -> None:
         _get().cancel_order_by_id(order_id)
     except Exception:
         pass
+
+
+def _cancel_bracket_stop_leg(order_id: str) -> None:
+    """Cancel the bracket's fixed stop-loss leg so a trailing stop can be submitted without conflict."""
+    try:
+        o = _get().get_order_by_id(order_id)
+        for leg in (o.legs or []):
+            leg_type   = str(leg.order_type).lower()
+            leg_status = str(leg.status).lower()
+            if "stop" in leg_type and "trailing" not in leg_type:
+                if "cancel" not in leg_status and "fill" not in leg_status:
+                    _get().cancel_order_by_id(str(leg.id))
+                    print(f"[alpaca] {o.symbol} stop leg cancelled — trail will replace it")
+                break
+    except Exception as e:
+        print(f"[alpaca] _cancel_bracket_stop_leg: {e}")
 
 
 def open_positions() -> list[dict]:
@@ -519,6 +536,9 @@ def update_positions_intraday() -> dict:
             if (pos.get("trail_order_id") is None
                     and pos.get("fill_price") is not None
                     and pos["ticker"] in alpaca_open):
+                order_id = pos.get("alpaca_order_id")
+                if order_id:
+                    _cancel_bracket_stop_leg(order_id)
                 trail_id = submit_trailing_stop(pos["ticker"], int(pos["shares"]), TRAIL_PCT)
                 if trail_id:
                     db.update("b_positions", {"id": pos["id"]}, {"trail_order_id": trail_id})

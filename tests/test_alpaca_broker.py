@@ -862,3 +862,105 @@ def test_manual_trail_does_not_fire_above_eff_stop(
     update_positions_intraday()
 
     mock_close.assert_not_called()
+
+
+# ── _cancel_bracket_stop_leg ─────────────────────────────────────────────────
+
+def _make_stop_leg(order_type="stop", status="new", leg_id="leg-b-001"):
+    leg = MagicMock()
+    leg.order_type = order_type
+    leg.status     = status
+    leg.id         = leg_id
+    return leg
+
+
+@patch("agents.alpaca_broker._get")
+def test_cancel_bracket_stop_leg_cancels_open_stop(mock_get):
+    """Open stop leg is cancelled so trailing stop can be submitted."""
+    stop_leg = _make_stop_leg("stop", "new")
+    order = MagicMock(); order.symbol = "AAPL"; order.legs = [stop_leg]
+    mock_get.return_value.get_order_by_id.return_value = order
+
+    from agents.alpaca_broker import _cancel_bracket_stop_leg
+    _cancel_bracket_stop_leg("ord-b-001")
+
+    mock_get.return_value.cancel_order_by_id.assert_called_once_with("leg-b-001")
+
+
+@patch("agents.alpaca_broker._get")
+def test_cancel_bracket_stop_leg_skips_already_cancelled(mock_get):
+    stop_leg = _make_stop_leg("stop", "canceled")
+    order = MagicMock(); order.symbol = "AAPL"; order.legs = [stop_leg]
+    mock_get.return_value.get_order_by_id.return_value = order
+
+    from agents.alpaca_broker import _cancel_bracket_stop_leg
+    _cancel_bracket_stop_leg("ord-b-001")
+
+    mock_get.return_value.cancel_order_by_id.assert_not_called()
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_live_quotes")
+@patch("agents.alpaca_broker._get")
+def test_place_orders_cancels_stop_leg_before_trail(mock_get, mock_quotes):
+    """_cancel_bracket_stop_leg is called before submit_trailing_stop at placement."""
+    from alpaca.trading.requests import LimitOrderRequest
+
+    mock_quotes.return_value = {"AAPL": {"ask": 150.10, "bid": 150.00}}
+
+    filled = MagicMock()
+    filled.id = "ord-place-001"
+    filled.status = "filled"
+    filled.filled_avg_price = 150.00
+
+    mock_get.return_value.submit_order.return_value = MagicMock(id="ord-place-001")
+    mock_get.return_value.get_order_by_id.return_value = filled
+
+    cancel_calls = []
+    def fake_cancel_stop_leg(order_id):
+        cancel_calls.append(order_id)
+    trail_calls = []
+    def fake_submit_trail(*args, **kwargs):
+        trail_calls.append(args)
+        return "trail-place-001"
+
+    import agents.alpaca_broker as broker_mod
+    with patch.object(broker_mod, "_cancel_bracket_stop_leg", side_effect=fake_cancel_stop_leg), \
+         patch.object(broker_mod, "submit_trailing_stop", side_effect=fake_submit_trail), \
+         patch("agents.alpaca_broker.db") as mock_db:
+        mock_db.insert.return_value = None
+        broker_mod.place_orders([{
+            "ticker": "AAPL", "shares": 10, "pool": 2, "action": "BUY",
+            "entry_price": 150.0, "target_price": 156.0, "stop_loss": 147.0,
+            "position_size": 1500, "confidence": "HIGH",
+        }])
+
+    assert len(cancel_calls) == 1, "_cancel_bracket_stop_leg must be called once"
+    assert len(trail_calls) == 1, "submit_trailing_stop must be called once"
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_trail_backfill_calls_cancel_stop_leg(mock_get, mock_db, mock_price, mock_signals):
+    """Backfill retry in update_positions_intraday cancels stop leg before submitting trail."""
+    pos = _open_pos_no_trail()
+    pos["alpaca_order_id"] = "ord-orcl-bracket-001"
+    alpaca_pos = MagicMock(); alpaca_pos.symbol = "ORCL"
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+    trail_order = MagicMock(); trail_order.id = "trail-backfill-001"
+    mock_get.return_value.submit_order.return_value = trail_order
+    mock_db.select.return_value = [pos]
+    mock_db.update.return_value = None
+
+    cancel_calls = []
+    import agents.alpaca_broker as broker_mod
+    with patch.object(broker_mod, "_cancel_bracket_stop_leg", side_effect=lambda oid: cancel_calls.append(oid)):
+        update_positions_intraday()
+
+    assert len(cancel_calls) >= 1, "_cancel_bracket_stop_leg must be called during backfill"
