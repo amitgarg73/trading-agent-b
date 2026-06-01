@@ -14,14 +14,7 @@ _CONFIDENCE_RANK = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}
 
 
 def _get_sector(ticker: str) -> str:
-    if ticker in SECTOR_MAP:
-        return SECTOR_MAP[ticker]
-    # yfinance fallback for any promoted Pool 1 stock not in the static map
-    try:
-        import yfinance as yf
-        return yf.Ticker(ticker).info.get("sector") or "Unknown"
-    except Exception:
-        return "Unknown"
+    return SECTOR_MAP.get(ticker, "Unknown")
 
 
 def run(risk_output: dict) -> dict:

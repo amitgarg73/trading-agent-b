@@ -293,6 +293,32 @@ def _fetch_atr_for_tickers(tickers: list[str]) -> dict[str, float | None]:
     return result
 
 
+def _get_gap_up_tickers(min_gap_pct: float = 2.0, top_n: int = 20) -> list[dict]:
+    """
+    Fetch today's top gap-up movers via Alpaca ScreenerClient.
+    Returns [{"ticker": str, "gap_pct": float, "price": float}].
+    Silently returns [] on any failure.
+    """
+    try:
+        import os
+        from alpaca.data.historical.screener import ScreenerClient
+        from alpaca.data.requests import MarketMoversRequest
+        from alpaca.data.enums import MarketType
+        client = ScreenerClient(
+            os.environ.get("ALPACA_API_KEY", ""),
+            os.environ.get("ALPACA_SECRET_KEY", ""),
+        )
+        movers = client.get_market_movers(MarketMoversRequest(market_type=MarketType.STOCKS, top=top_n))
+        return [
+            {"ticker": m.symbol, "gap_pct": m.percent_change, "price": m.price}
+            for m in (movers.gainers or [])
+            if m.percent_change >= min_gap_pct
+        ]
+    except Exception as e:
+        print(f"  [gap_up] ScreenerClient failed: {e}")
+        return []
+
+
 def _load_intraday_scans(today: str) -> list[dict]:
     """Load today's intraday scan records. Returns [] if table doesn't exist yet."""
     try:
@@ -422,6 +448,23 @@ def _maybe_run_intraday_scan(broker: str) -> None:
                       if c["ticker"] not in traded_today]
         print(f"        Momentum movers: {len(candidates)} Pool 3 stocks "
               f"up ≥{MIN_INTRADAY_MOVE_PCT:.0f}% above VWAP")
+
+        # Gap-up injection for intraday scan
+        intraday_tickers = {c["ticker"] for c in candidates}
+        gap_ups = _get_gap_up_tickers()
+        for g in gap_ups:
+            if g["ticker"] not in traded_today and g["ticker"] not in intraday_tickers:
+                candidates.append({
+                    "ticker":          g["ticker"],
+                    "technical_score": 6,
+                    "current_price":   g["price"],
+                    "signals":         ["gap_up"],
+                    "_source":         "gap_up",
+                    "premarket_change_pct": g["gap_pct"],
+                })
+                intraday_tickers.add(g["ticker"])
+        if gap_ups:
+            print(f"        Gap-up injection: {len(candidates)} total candidates after movers")
 
         if not candidates:
             _save_intraday_scan(today, now_utc, {"candidates": 0})
@@ -597,6 +640,25 @@ def premarket(broker: str = "alpaca") -> None:
         print(f"    Pool3 fill-in: {len(pool3_missed)} tickers scanner missed → {len(candidates)} total")
     else:
         print(f"    Scanner covered all pool3 tickers → {len(candidates)} candidates")
+
+    # 3.1 Gap-up injection — Alpaca market movers (≥2%) not already in candidate list
+    existing_tickers = {c["ticker"] for c in candidates}
+    gap_ups = _get_gap_up_tickers()
+    gap_injected = []
+    for g in gap_ups:
+        if g["ticker"] not in existing_tickers:
+            gap_injected.append({
+                "ticker":          g["ticker"],
+                "technical_score": 6,
+                "current_price":   g["price"],
+                "signals":         ["gap_up"],
+                "_source":         "gap_up",
+                "premarket_change_pct": g["gap_pct"],
+            })
+            existing_tickers.add(g["ticker"])
+    if gap_injected:
+        candidates = candidates + gap_injected
+        print(f"    Gap-up injection: {len(gap_injected)} new mover(s) added → {len(candidates)} total")
 
     # 3.2 Live price refresh + VWAP enrichment via Alpaca snapshot (batch call)
     if broker == "alpaca":

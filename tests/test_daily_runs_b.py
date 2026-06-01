@@ -78,6 +78,7 @@ def _run_b_intraday_scan(hour=WINDOW_HOUR, prior_scans=None, open_pos=None,
                return_value=sum(r.get("realized_pnl", 0) for r in b_closed_rows)), \
          patch("scanner.pool_filter.get_pool3_tickers", return_value=["AAPL", "MSFT"]), \
          patch("scanner.intraday_momentum.scan",       return_value=candidates), \
+         patch("orchestrator._get_gap_up_tickers",    return_value=[]), \
          patch("agents.market_context.get",            return_value={"summary": "flat"}), \
          patch("agents.strategy.select_trades",        return_value={"trades": trades}), \
          patch("agents.risk.validate",                 return_value=(approved, [])), \

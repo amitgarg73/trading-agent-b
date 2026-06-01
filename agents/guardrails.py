@@ -13,7 +13,6 @@ Checks applied in order:
 """
 from __future__ import annotations
 from datetime import date
-import yfinance as yf
 from config.settings import TARGET_PCT, INTRADAY_TARGET_PCT, MAX_LOSS_PER_TRADE, MIN_REWARD_RISK, PRICE_SANITY_PCT, TOTAL_CAPITAL
 from core import db
 
@@ -23,7 +22,7 @@ REQUIRED_FIELDS = ["ticker", "action", "entry_price", "target_price",
 
 
 def _current_price(ticker: str) -> float | None:
-    """Fetch live price — Alpaca first, yfinance fallback."""
+    """Fetch live price via Alpaca latest trade."""
     try:
         from alpaca.data.historical import StockHistoricalDataClient
         from alpaca.data.requests import StockLatestTradeRequest
@@ -36,14 +35,7 @@ def _current_price(ticker: str) -> float | None:
         trade = data.get_stock_latest_trade(req)
         return float(trade[ticker].price)
     except Exception:
-        pass
-    try:
-        df = yf.Ticker(ticker).history(period="1d", interval="1m")
-        if not df.empty:
-            return round(float(df["Close"].iloc[-1]), 2)
-    except Exception:
-        pass
-    return None
+        return None
 
 
 def _get_buying_power(broker: str) -> float | None:

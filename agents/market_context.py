@@ -9,10 +9,55 @@ import yfinance as yf
 _SECTOR_ETFS = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLB", "XLRE", "XLU"]
 
 
+def _fetch_spy_change() -> tuple[str, float | None]:
+    """Return (futures_bias, spy_change_pct) via Alpaca daily bars."""
+    try:
+        from datetime import datetime, timedelta
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from agents.alpaca_broker import _dclient
+        req  = StockBarsRequest(symbol_or_symbols="SPY", timeframe=TimeFrame.Day,
+                                start=datetime.utcnow() - timedelta(days=5),
+                                end=datetime.utcnow())
+        bars = _dclient().get_stock_bars(req).data.get("SPY") or []
+        if len(bars) >= 2:
+            prev = bars[-2].close
+            curr = bars[-1].close
+            chg  = (curr - prev) / prev
+            bias = "BULLISH" if chg > 0.002 else ("BEARISH" if chg < -0.002 else "NEUTRAL")
+            return bias, round(chg * 100, 2)
+    except Exception:
+        pass
+    return "NEUTRAL", None
+
+
+def _fetch_sector_rotation() -> dict:
+    """Return {ETF: change_pct} sorted best→worst via Alpaca daily bars."""
+    try:
+        from datetime import datetime, timedelta
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from agents.alpaca_broker import _dclient
+        req  = StockBarsRequest(symbol_or_symbols=_SECTOR_ETFS, timeframe=TimeFrame.Day,
+                                start=datetime.utcnow() - timedelta(days=5),
+                                end=datetime.utcnow())
+        bars = _dclient().get_stock_bars(req).data
+        rotation = {}
+        for etf in _SECTOR_ETFS:
+            etf_bars = bars.get(etf) or []
+            if len(etf_bars) >= 2:
+                prev = etf_bars[-2].close
+                curr = etf_bars[-1].close
+                rotation[etf] = round((curr - prev) / prev * 100, 2)
+        return dict(sorted(rotation.items(), key=lambda x: x[1], reverse=True))
+    except Exception:
+        return {}
+
+
 def get() -> dict:
     context = {}
 
-    # VIX
+    # VIX — Alpaca doesn't carry ^VIX; keep on yfinance (single call, low rate-limit risk)
     try:
         vix = yf.Ticker("^VIX").history(period="2d")
         if not vix.empty:
@@ -20,15 +65,10 @@ def get() -> dict:
     except Exception:
         context["vix_level"] = None
 
-    # Futures bias via SPY pre/post market
-    try:
-        spy = yf.Ticker("SPY").history(period="2d")
-        if len(spy) >= 2:
-            chg = (float(spy["Close"].iloc[-1]) - float(spy["Close"].iloc[-2])) / float(spy["Close"].iloc[-2])
-            context["futures_bias"] = "BULLISH" if chg > 0.002 else ("BEARISH" if chg < -0.002 else "NEUTRAL")
-            context["spy_change_pct"] = round(chg * 100, 2)
-    except Exception:
-        context["futures_bias"] = "NEUTRAL"
+    # SPY recent momentum via Alpaca
+    bias, spy_chg = _fetch_spy_change()
+    context["futures_bias"]    = bias
+    context["spy_change_pct"]  = spy_chg
 
     # Fear & Greed (CNN)
     try:
@@ -45,23 +85,8 @@ def get() -> dict:
         context["fear_greed"] = 50
         context["fear_greed_label"] = "Neutral"
 
-    # Sector rotation
-    try:
-        import pandas as pd
-        raw = yf.download(_SECTOR_ETFS, period="2d", interval="1d",
-                          progress=False, group_by="ticker")
-        rotation = {}
-        for etf in _SECTOR_ETFS:
-            try:
-                s = raw[etf]["Close"].dropna() if isinstance(raw.columns, pd.MultiIndex) else raw["Close"].dropna()
-                if len(s) >= 2:
-                    chg = (float(s.iloc[-1]) - float(s.iloc[-2])) / float(s.iloc[-2]) * 100
-                    rotation[etf] = round(chg, 2)
-            except Exception:
-                pass
-        context["sector_rotation"] = dict(sorted(rotation.items(), key=lambda x: x[1], reverse=True))
-    except Exception:
-        context["sector_rotation"] = {}
+    # Sector rotation via Alpaca
+    context["sector_rotation"] = _fetch_sector_rotation()
 
     print(f"[market_context] VIX={context.get('vix_level')} "
           f"F&G={context.get('fear_greed')} bias={context.get('futures_bias')}")

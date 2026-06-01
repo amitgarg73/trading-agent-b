@@ -31,16 +31,8 @@ def test_get_sector_uses_sector_map():
     assert sector_guard._get_sector(ticker) == SECTOR_MAP[ticker]
 
 
-def test_get_sector_yfinance_fallback():
-    with patch("yfinance.Ticker") as mock_yf:
-        mock_yf.return_value.info = {"sector": "Technology"}
-        result = sector_guard._get_sector("UNKNOWN_TICKER")
-    assert result == "Technology"
-
-
-def test_get_sector_unknown_on_exception():
-    with patch("yfinance.Ticker", side_effect=Exception("network")):
-        result = sector_guard._get_sector("UNKNOWN_TICKER")
+def test_get_sector_unknown_for_unmapped():
+    result = sector_guard._get_sector("TOTALLY_UNKNOWN_XYZ")
     assert result == "Unknown"
 
 

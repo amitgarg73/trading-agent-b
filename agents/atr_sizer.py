@@ -15,7 +15,6 @@ validated the original prices; if ATR widens the stop below the floor, the trade
 is not viable and should not be placed.
 """
 from __future__ import annotations
-import yfinance as yf
 from config.settings import (
     ATR_STOP_MULTIPLIER, ATR_STOP_FLOOR, MAX_LOSS_DOLLARS,
     ORB_ATR_FLOOR, POSITION_SIZE_BY_CONFIDENCE, MIN_REWARD_RISK,
@@ -29,20 +28,26 @@ def _fetch_orb_pct(ticker: str, entry: float) -> float | None:
     if ticker in _orb_cache:
         return _orb_cache[ticker]
     try:
-        df = yf.Ticker(ticker).history(period="1d", interval="5m")
-        if df.empty:
+        from datetime import datetime, timedelta
+        import pytz
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from agents.alpaca_broker import _dclient
+        ET    = pytz.timezone("America/New_York")
+        now   = datetime.now(ET)
+        start = now.replace(hour=9, minute=30, second=0, microsecond=0).astimezone(pytz.utc)
+        end   = now.replace(hour=10, minute=0, second=0, microsecond=0).astimezone(pytz.utc)
+        if end > datetime.now(pytz.utc):
+            end = datetime.now(pytz.utc)
+        req  = StockBarsRequest(symbol_or_symbols=ticker, timeframe=TimeFrame.Minute,
+                                start=start, end=end)
+        bars = _dclient().get_stock_bars(req).data.get(ticker) or []
+        if len(bars) < 2:
             _orb_cache[ticker] = None
             return None
-        idx = df.index
-        if idx.tz is None:
-            idx = idx.tz_localize("UTC")
-        df.index = idx.tz_convert("America/New_York")
-        orb = df.between_time("09:30", "09:59")
-        if len(orb) < 2:
-            _orb_cache[ticker] = None
-            return None
-        orb_range = float(orb["High"].max() - orb["Low"].min())
-        result = orb_range / entry if entry > 0 else 0.0
+        high   = max(b.high for b in bars)
+        low    = min(b.low  for b in bars)
+        result = (high - low) / entry if entry > 0 else 0.0
         _orb_cache[ticker] = result
         return result
     except Exception:
