@@ -2,8 +2,8 @@
 Tests for RF-5 in Strategy B: INTRADAY_ENTRY_CUTOFF_UTC gate in
 orchestrator._maybe_run_intraday_scan().
 
-Late entries (3:00 PM ET = UTC 19+) are negative EV — not enough time
-to hit a 1% target. The guard must block new scans at or after hour 19.
+Entries after 12:00 PM ET (UTC 16) are negative EV — Strategy A data shows 0 targets
+and 12-25% win rates from noon onward. Cutoff moved from 3 PM (UTC 19) to noon (UTC 16).
 """
 import pytest
 from unittest.mock import patch
@@ -39,8 +39,11 @@ class TestEntryCutoffB:
     def test_scan_allowed_at_hour_14(self):
         assert _run_scan_at_hour(14) is True
 
-    def test_scan_allowed_at_hour_18(self):
-        assert _run_scan_at_hour(18) is True
+    def test_scan_blocked_at_hour_16(self):
+        assert _run_scan_at_hour(16) is False
+
+    def test_scan_blocked_at_hour_18(self):
+        assert _run_scan_at_hour(18) is False
 
     def test_scan_blocked_at_hour_19(self):
         assert _run_scan_at_hour(19) is False
@@ -48,9 +51,6 @@ class TestEntryCutoffB:
     def test_scan_blocked_at_hour_20(self):
         assert _run_scan_at_hour(20) is False
 
-    def test_scan_blocked_at_hour_21(self):
-        assert _run_scan_at_hour(21) is False
-
-    def test_cutoff_constant_is_19(self):
+    def test_cutoff_constant_is_16(self):
         from config.settings import INTRADAY_ENTRY_CUTOFF_UTC
-        assert INTRADAY_ENTRY_CUTOFF_UTC == 19
+        assert INTRADAY_ENTRY_CUTOFF_UTC == 16

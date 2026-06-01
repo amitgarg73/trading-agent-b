@@ -2,8 +2,8 @@ name: Intraday Entry Scan
 
 on:
   schedule:
-    # Every 60 min 10:30 AM–2:30 PM ET (14:30–18:30 UTC) — entry cutoff is 3:00 PM ET
-    - cron: '30 14-18 * * 1-5'
+    # 10:30 AM and 11:30 AM ET only (14:30, 15:30 UTC) — data shows 0 targets after noon; cutoff moved to 12:00 PM ET
+    - cron: '30 14,15 * * 1-5'
   workflow_dispatch:
     inputs:
       broker:

@@ -67,8 +67,8 @@ SCORE_THRESHOLD      = 1
 # Intraday scan windows
 INTRADAY_SCAN_UTC_START         = 14   # 10:00 AM ET (after premarket finishes)
 INTRADAY_SCAN_UTC_END           = 20   # outer scheduling window end
-INTRADAY_ENTRY_CUTOFF_UTC       = 19   # 3:00 PM ET hard entry cutoff; late entries are negative EV
-INTRADAY_SCAN_MAX_RUNS          = 6    # hourly: 10 AM, 11 AM, 12 PM, 1 PM, 2 PM, 3 PM ET
+INTRADAY_ENTRY_CUTOFF_UTC       = 16   # 12:00 PM ET hard entry cutoff; Strategy A data shows 0 targets + 12-25% win rate after noon
+INTRADAY_SCAN_MAX_RUNS          = 2    # only 10:30 AM + 11:30 AM scans now run; cap reduced accordingly
 INTRADAY_SCAN_MIN_INTERVAL_MINS = 55   # ~1 hr apart (55 min absorbs GH Actions delay)
 INTRADAY_TARGET_PCT             = 0.01
 MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal)
