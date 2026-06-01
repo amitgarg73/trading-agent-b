@@ -264,6 +264,53 @@ def _cap_intraday_targets(trades: list[dict]) -> list[dict]:
     return result
 
 
+def _fetch_atr_for_tickers(tickers: list[str]) -> dict[str, float | None]:
+    """
+    Batch-fetch 14-day ATR% for a small set of tickers via yfinance.
+    Returns {ticker: atr_pct} — None for any ticker that fails.
+    Used by intraday ATR sizer so stops survive normal intraday noise.
+    """
+    import yfinance as yf
+    import pandas as pd
+
+    if not tickers:
+        return {}
+
+    result: dict[str, float | None] = {t: None for t in tickers}
+    try:
+        raw = yf.download(
+            tickers,
+            period="20d",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+            group_by="ticker",
+        )
+        for ticker in tickers:
+            try:
+                hist = raw[ticker] if len(tickers) > 1 else raw
+                hist = hist.dropna(subset=["Close"])
+                if len(hist) < 10:
+                    continue
+                h, l, c   = hist["High"], hist["Low"], hist["Close"]
+                prev_c    = c.shift(1)
+                tr        = (h - l).abs().combine((h - prev_c).abs(), max).combine((l - prev_c).abs(), max)
+                atr       = float(tr.iloc[-14:].mean())
+                price     = float(c.iloc[-1])
+                if price > 0:
+                    result[ticker] = round(atr / price * 100, 2)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"  [atr_fetch] yfinance batch failed: {e}")
+
+    for t, v in result.items():
+        if v is None:
+            print(f"  [atr_fetch] {t}: no ATR — formula stop will apply")
+    return result
+
+
 def _load_intraday_scans(today: str) -> list[dict]:
     """Load today's intraday scan records. Returns [] if table doesn't exist yet."""
     try:
@@ -426,9 +473,11 @@ def _maybe_run_intraday_scan(broker: str) -> None:
             _save_intraday_scan(today, now_utc, {"candidates": len(candidates), "rejected": len(trades)})
             return
 
-        # ATR sizing — intraday momentum candidates don't carry atr_pct, so all pass through
+        # ATR sizing — fetch real 14-day ATR for intraday candidates so stops are
+        # sized to survive normal intraday noise (formula stop of 0.67% is too tight
+        # for high-ATR names like NVDA which move $4-5/day).
         from agents import atr_sizer
-        intraday_atr = {c["ticker"]: c.get("atr_pct") for c in candidates}
+        intraday_atr = _fetch_atr_for_tickers([t["ticker"] for t in approved])
         approved, _ = atr_sizer.apply(approved, intraday_atr)
 
         final, _guard_rejected = guardrails.check(approved, broker=broker)
