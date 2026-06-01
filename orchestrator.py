@@ -658,11 +658,12 @@ def premarket(broker: str = "alpaca") -> None:
             "date":       str(date.today()),
             "scan_type":  "premarket",
             "scanned_at": datetime.utcnow().isoformat(),
-            "candidates": _premarket_candidates_slim,
+            "candidates": len(_premarket_candidates_slim),
             "placed":     0,
             "results": {
                 "pool3_count":  len(pool3_tickers),
                 "after_scan":   len(candidates),
+                "candidate_list": _premarket_candidates_slim,
             },
         })
     except Exception as _e:
