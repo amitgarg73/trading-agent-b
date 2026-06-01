@@ -503,6 +503,7 @@ def premarket(broker: str = "alpaca") -> None:
     _n_after_scan = _n_after_filters = 0
     _dropped = _dropped_orb = _dropped_top = 0
     _spy_pct: float | None = None
+    _max_positions_today = MAX_POSITIONS
     _candidates_sent: list = []
     _trades_selected: list = []
     _risk_rejected: list = []
@@ -633,12 +634,13 @@ def premarket(broker: str = "alpaca") -> None:
         if dropped_top:
             print(f"    Top-of-range filter: dropped {dropped_top} near-day-high candidate(s)")
 
-        # SPY premarket gate — if SPY opened negative, reduce slots to avoid down-market momentum entries.
+        # SPY premarket gate — if SPY opened negative, reduce slots instead of skipping entirely.
         _n_after_filters = len(candidates)
         _spy_pct = intraday_sigs.get("SPY", {}).get("today_pct_change", None)
         if _spy_pct is not None and _spy_pct < 0:
-            print(f"    ⚠️  SPY premarket: {_spy_pct:+.2f}% — market opened negative. Skipping today.")
-            return
+            _max_positions_today = max(0, MAX_POSITIONS - 3)
+            print(f"    ⚠️  SPY premarket: {_spy_pct:+.2f}% — market opened negative. "
+                  f"Reducing max positions {MAX_POSITIONS}→{_max_positions_today}.")
         elif _spy_pct is not None:
             print(f"    SPY premarket: {_spy_pct:+.2f}% ✅")
 
@@ -676,11 +678,12 @@ def premarket(broker: str = "alpaca") -> None:
         print("[orchestrator] No candidates to trade")
         return
 
-    # 3.8 Trade cap — top MAX_DAILY_ENTRIES candidates by score before Claude sees them.
-    if len(candidates) > MAX_DAILY_ENTRIES:
+    # 3.8 Trade cap — top min(MAX_DAILY_ENTRIES, _max_positions_today) by score before Claude sees them.
+    _entry_cap = min(MAX_DAILY_ENTRIES, _max_positions_today)
+    if len(candidates) > _entry_cap:
         candidates.sort(key=lambda x: x.get("technical_score") or 0, reverse=True)
-        candidates = candidates[:MAX_DAILY_ENTRIES]
-        print(f"    Trade cap: top {MAX_DAILY_ENTRIES} candidates by score sent to Claude")
+        candidates = candidates[:_entry_cap]
+        print(f"    Trade cap: top {_entry_cap} candidates by score sent to Claude")
 
     _candidates_sent = candidates
 

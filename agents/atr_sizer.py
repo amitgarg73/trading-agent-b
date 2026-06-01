@@ -96,29 +96,14 @@ def apply(trades: list[dict],
         shares_by_risk = max(1, int(MAX_LOSS_DOLLARS / (entry * stop_pct)))
         shares_by_size = max(1, int(size_cap / entry))
         shares         = min(shares_by_risk, shares_by_size)
+        position_size  = round(shares * entry, 2)
 
-        # P0-2: ORB choppiness gate
-        orb_pct = _fetch_orb_pct(ticker, entry)
-        choppy  = orb_pct is not None and orb_pct < (atr_pct / 100.0) * ORB_ATR_FLOOR
-        if choppy:
-            shares = max(1, shares // 2)
+        # Size floor check BEFORE ORB halving — ORB is intentional risk reduction, not a quality gate.
+        # Enforce R:R here too (based on full-size shares before halving).
+        est_profit = round(shares * (target - entry), 2)
+        max_loss   = round(shares * (entry - stop), 2)
+        rr         = round(est_profit / max_loss, 2) if max_loss > 0 else 0.0
 
-        position_size = round(shares * entry, 2)
-        est_profit    = round(shares * (target - entry), 2)
-        max_loss      = round(shares * (entry - stop), 2)
-        rr            = round(est_profit / max_loss, 2) if max_loss > 0 else 0.0
-
-        print(
-            f"  [atr_sizer] {ticker}: stop ${t.get('stop_loss', entry):.2f}→${stop:.2f} "
-            f"({stop_pct*100:.1f}%, ATR={atr_pct:.1f}%), "
-            f"shares {t.get('shares', 0)}→{shares}, "
-            f"size ${t.get('position_size', 0):,.0f}→${position_size:,.0f}, "
-            f"R:R {rr:.2f}"
-            + (" [ORB choppy — halved]" if choppy else "")
-        )
-
-        # Re-enforce constraints after stop adjustment — risk validated original prices;
-        # if ATR widens the stop, R:R and size may fall below minimums.
         if rr < min_rr:
             reason = f"{ticker}: R:R {rr:.2f} below {min_rr} after ATR stop — dropped"
             print(f"  [atr_sizer] {reason}")
@@ -129,6 +114,25 @@ def apply(trades: list[dict],
             print(f"  [atr_sizer] {reason}")
             dropped.append(reason)
             continue
+
+        # P0-2: ORB choppiness gate — halve shares for choppy opens; size floor already cleared above
+        orb_pct = _fetch_orb_pct(ticker, entry)
+        choppy  = orb_pct is not None and orb_pct < (atr_pct / 100.0) * ORB_ATR_FLOOR
+        if choppy:
+            shares        = max(1, shares // 2)
+            position_size = round(shares * entry, 2)
+            est_profit    = round(shares * (target - entry), 2)
+            max_loss      = round(shares * (entry - stop), 2)
+            rr            = round(est_profit / max_loss, 2) if max_loss > 0 else 0.0
+
+        print(
+            f"  [atr_sizer] {ticker}: stop ${t.get('stop_loss', entry):.2f}→${stop:.2f} "
+            f"({stop_pct*100:.1f}%, ATR={atr_pct:.1f}%), "
+            f"shares {t.get('shares', 0)}→{shares}, "
+            f"size ${t.get('position_size', 0):,.0f}→${position_size:,.0f}, "
+            f"R:R {rr:.2f}"
+            + (" [ORB choppy — halved]" if choppy else "")
+        )
 
         adjusted.append({
             **t,
