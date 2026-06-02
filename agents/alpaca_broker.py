@@ -246,7 +246,7 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                 time.sleep(1)
                 try:
                     filled = broker.get_order_by_id(str(order.id))
-                    status = str(filled.status).lower()
+                    status = str(getattr(filled.status, "value", str(filled.status))).lower()
                     if status in ("filled", "partially_filled"):
                         fill_price     = float(filled.filled_avg_price) if filled.filled_avg_price else None
                         order_accepted = True
@@ -715,6 +715,19 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
     entry   = float(pos["fill_price"] or pos["entry_price"])  # use actual fill price for P&L
     pnl     = round(shares * (price - entry), 2)
 
+    # Guard: if Alpaca already has no position, a prior cycle already closed it.
+    # Mark DB closed and return — do NOT submit another sell (would create a short).
+    try:
+        _get().get_open_position(ticker)
+    except Exception:
+        print(f"[alpaca] {ticker} no open position in Alpaca — marking DB closed (already filled by prior cycle)")
+        db.update("b_positions", {"id": pos["id"]}, {
+            "status": "CLOSED", "close_price": price, "exit_price": price,
+            "realized_pnl": pnl, "close_reason": reason, "exit_reason": reason,
+            "closed_at": datetime.utcnow().isoformat(), "exit_mechanism": reason,
+        })
+        return
+
     # Cancel open bracket legs and trailing stop before submitting manual close.
     order_id = pos.get("alpaca_order_id")
     if order_id:
@@ -750,7 +763,7 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
             time.sleep(1)
             try:
                 result = broker.get_order_by_id(str(close_order.id))
-                status = str(result.status).lower()
+                status = str(getattr(result.status, "value", str(result.status))).lower()
                 if status == "filled":
                     if result.filled_avg_price:
                         actual_close_price = float(result.filled_avg_price)

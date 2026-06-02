@@ -1000,3 +1000,44 @@ def test_trail_backfill_calls_cancel_stop_leg(mock_get, mock_db, mock_price, moc
         update_positions_intraday()
 
     assert len(cancel_calls) >= 1, "_cancel_bracket_stop_leg must be called during backfill"
+
+
+# ── Double-sell guard ─────────────────────────────────────────────────────────
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker._get")
+def test_close_position_no_sell_when_alpaca_already_flat(mock_get, mock_update):
+    """If Alpaca has no open position, _close_position marks DB closed without submitting a sell.
+    Prevents double-sell creating a short when a prior cycle already closed the position."""
+    mock_get.return_value.get_open_position.side_effect = Exception("position does not exist")
+
+    pos = _pos(fill=100.0, shares=10)
+    _close_position(pos, price=97.0, reason="STOP")
+
+    mock_get.return_value.submit_order.assert_not_called()
+    update_kwargs = mock_update.call_args[0][2]
+    assert update_kwargs["status"] == "CLOSED"
+    assert update_kwargs["close_reason"] == "STOP"
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker._get")
+def test_close_position_confirms_fill_with_enum_status(mock_get, mock_update):
+    """close_confirmed must be set when Alpaca returns status as an enum object (not plain string)."""
+    alpaca_pos = MagicMock()
+    alpaca_pos.symbol = "AAPL"
+    mock_get.return_value.get_open_position.return_value = alpaca_pos
+
+    filled_mock = MagicMock()
+    filled_mock.status = MagicMock()
+    filled_mock.status.value = "filled"
+    filled_mock.filled_avg_price = 97.0
+    mock_get.return_value.submit_order.return_value = MagicMock()
+    mock_get.return_value.get_order_by_id.return_value = filled_mock
+
+    pos = _pos(fill=100.0, shares=10)
+    _close_position(pos, price=97.0, reason="STOP")
+
+    update_kwargs = mock_update.call_args[0][2]
+    assert update_kwargs["status"] == "CLOSED"
+    assert update_kwargs["close_price"] == 97.0
