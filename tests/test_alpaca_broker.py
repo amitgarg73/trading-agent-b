@@ -757,6 +757,42 @@ def test_trail_backfill_skipped_for_unfilled_position(
 @patch("agents.alpaca_broker.get_current_price", return_value=222.0)
 @patch("agents.alpaca_broker.db")
 @patch("agents.alpaca_broker._get")
+def test_fill_price_backfilled_when_order_confirmed(mock_get, mock_db, mock_price, mock_signals):
+    """Position with fill_price=None gets fill_price backfilled when Alpaca shows order filled."""
+    pos = {**_open_pos_no_trail(fill=None), "alpaca_order_id": "order-abc-123"}
+
+    alpaca_pos = MagicMock(); alpaca_pos.symbol = "ORCL"
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+
+    # Alpaca order shows filled
+    filled_order = MagicMock()
+    filled_order.status = "filled"
+    filled_order.filled_avg_price = 203.10
+    mock_get.return_value.get_order_by_id.return_value = filled_order
+
+    trail_order = MagicMock(); trail_order.id = "trail-xyz"
+    mock_get.return_value.submit_order.return_value = trail_order
+    mock_db.select.return_value = [pos]
+    mock_db.update.return_value = None
+
+    update_positions_intraday()
+
+    # fill_price should have been written to DB
+    fill_updates = [c for c in mock_db.update.call_args_list if "fill_price" in str(c)]
+    assert len(fill_updates) >= 1, "Expected fill_price to be written to DB"
+    # Trail should then have been submitted
+    trail_calls = [c for c in mock_get.return_value.submit_order.call_args_list
+                   if hasattr(c[0][0], "trail_percent")]
+    assert len(trail_calls) >= 1, "Expected trailing stop submitted after fill_price backfill"
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
 def test_trail_backfill_skipped_when_not_in_alpaca(
     mock_get, mock_db, mock_price, mock_signals
 ):

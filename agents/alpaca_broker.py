@@ -527,6 +527,26 @@ def update_positions_intraday() -> dict:
     if not positions:
         return {"checked": 0, "closed": []}
 
+    # Backfill fill_price for entries that filled after the initial 15s window.
+    # The trail backfill below requires fill_price to be set; without this,
+    # slow-filling limit orders never get a trailing stop assigned.
+    for pos in positions:
+        if pos.get("fill_price") is None and pos.get("alpaca_order_id"):
+            try:
+                order  = _get().get_order_by_id(pos["alpaca_order_id"])
+                status = str(getattr(order, "status", "")).lower()
+                if status in ("filled", "partially_filled") and order.filled_avg_price:
+                    fp = float(order.filled_avg_price)
+                    db.update("b_positions", {"id": pos["id"]}, {
+                        "fill_price":     fp,
+                        "high_watermark": fp,
+                        "low_watermark":  fp,
+                    })
+                    pos["fill_price"] = fp  # in-memory update so trail backfill fires this cycle
+                    print(f"  [fill_backfill] {pos['ticker']} confirmed fill ${fp:.2f}")
+            except Exception as e:
+                print(f"  ⚠️  fill_backfill: {pos.get('ticker')} order query failed: {e}")
+
     # Backfill trailing stops for confirmed-filled positions that have none.
     # Bracket legs are TimeInForce.DAY — they expire at EOD. Multi-day positions
     # lose both bracket and trail protection after day 1. Detect and resubmit here.
