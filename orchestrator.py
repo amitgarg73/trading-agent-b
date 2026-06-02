@@ -448,11 +448,12 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         print(f"        Momentum movers: {len(candidates)} Pool 3 stocks "
               f"up ≥{MIN_INTRADAY_MOVE_PCT:.0f}% above VWAP")
 
-        # Gap-up injection for intraday scan
+        # Gap-up injection for intraday scan — universe-restricted
         intraday_tickers = {c["ticker"] for c in candidates}
+        pool3_set = set(pool3_tickers)
         gap_ups = _get_gap_up_tickers()
         for g in gap_ups:
-            if g["ticker"] not in traded_today and g["ticker"] not in intraday_tickers:
+            if g["ticker"] not in traded_today and g["ticker"] not in intraday_tickers and g["ticker"] in pool3_set:
                 candidates.append({
                     "ticker":          g["ticker"],
                     "technical_score": 6,
@@ -640,12 +641,13 @@ def premarket(broker: str = "alpaca") -> None:
     else:
         print(f"    Scanner covered all pool3 tickers → {len(candidates)} candidates")
 
-    # 3.1 Gap-up injection — Alpaca market movers (≥2%) not already in candidate list
+    # 3.1 Gap-up injection — universe-restricted to pool3 tickers only
     existing_tickers = {c["ticker"] for c in candidates}
+    pool3_set = set(pool3_tickers)
     gap_ups = _get_gap_up_tickers()
     gap_injected = []
     for g in gap_ups:
-        if g["ticker"] not in existing_tickers:
+        if g["ticker"] not in existing_tickers and g["ticker"] in pool3_set:
             gap_injected.append({
                 "ticker":          g["ticker"],
                 "technical_score": 6,
