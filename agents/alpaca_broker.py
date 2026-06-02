@@ -436,6 +436,21 @@ def _reconcile_with_alpaca() -> None:
                 ("pending_new", "accepted", "new", "held", "partially_filled")
             and str(o.submitted_at or "").startswith(today[:10])
         }
+        # Fallback: non-trailing sell orders that filled today — catches the case where
+        # _close_position() submitted a market sell that closed the position but its own
+        # DB update failed (e.g. enum bug, network blip). Keyed by ticker, sorted by
+        # filled_at so we can find the earliest sell after the position opened.
+        market_sells_by_ticker: dict = {}
+        for o in all_orders:
+            if (getattr(o.side, "value", str(o.side)) == "sell"
+                    and "trailing" not in str(getattr(o, "order_type", "") or "").lower()
+                    and getattr(o.status, "value", str(o.status)) == "filled"
+                    and o.filled_avg_price):
+                t  = str(o.symbol)
+                ts = str(o.filled_at or o.submitted_at or "")
+                market_sells_by_ticker.setdefault(t, []).append((ts, float(o.filled_avg_price)))
+        for t in market_sells_by_ticker:
+            market_sells_by_ticker[t].sort(key=lambda x: x[0])
     except Exception as e:
         print(f"  ⚠️  Reconciliation: order fetch failed — {e}")
         from core import ledger, alerts
@@ -505,7 +520,31 @@ def _reconcile_with_alpaca() -> None:
                     })
                     print(f"  ✅ Bracket exit: {pos['ticker']} → {mechanism} @ ${close_price:.2f} P&L=${pnl:+.2f}")
                 else:
-                    print(f"  ⚠️  NATIVE_TRAIL: {pos['ticker']} gone from Alpaca but get_order_fill returned no price — position stays OPEN, will retry next cycle")
+                    # Bracket legs didn't fire — check if our own market sell closed it
+                    # (happens when _close_position() ran but its DB write failed).
+                    opened_at = str(pos.get("opened_at") or "")[:19]
+                    fallback_price = next(
+                        (fp for ts, fp in market_sells_by_ticker.get(pos["ticker"], [])
+                         if ts[:19] >= opened_at),
+                        None,
+                    )
+                    if fallback_price:
+                        entry  = float(pos.get("fill_price") or pos["entry_price"])
+                        shares = int(pos["shares"])
+                        pnl    = round(shares * (fallback_price - entry), 2)
+                        db.update("b_positions", {"id": pos["id"]}, {
+                            "status":         "CLOSED",
+                            "close_reason":   "MANUAL_CLOSE",
+                            "exit_reason":    "MANUAL_CLOSE",
+                            "exit_mechanism": "MANUAL_CLOSE",
+                            "close_price":    fallback_price,
+                            "exit_price":     fallback_price,
+                            "realized_pnl":   pnl,
+                            "closed_at":      datetime.utcnow().isoformat(),
+                        })
+                        print(f"  🔧 Market-sell recovery: {pos['ticker']} @ ${fallback_price:.2f} P&L={pnl:+.2f}")
+                    else:
+                        print(f"  ⚠️  {pos['ticker']} gone from Alpaca but no close price found — stays OPEN, will retry next cycle")
             continue
         # No filled buy and no pending buy — entry truly never executed
         print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")

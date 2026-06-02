@@ -451,6 +451,89 @@ def test_reconcile_bracket_exit_no_filled_leg_skips_update(mock_get, mock_select
 @patch("agents.alpaca_broker.db.update")
 @patch("agents.alpaca_broker.db.select")
 @patch("agents.alpaca_broker._get")
+def test_reconcile_market_sell_recovery(mock_get, mock_select, mock_update):
+    """When bracket legs didn't fire but a market sell closed the position,
+    reconcile must close the DB row using the market sell's fill price."""
+    from datetime import datetime
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"]          = "AAPL"
+    pos["status"]          = "OPEN"
+    pos["alpaca_order_id"] = "parent-order-abc"
+    pos["opened_at"]       = "2026-06-02T14:00:00"
+
+    # Build order list: filled buy (entry) + market sell (close) + no trailing sell
+    buy_order = _buy_order("AAPL", status="filled", submitted_at="2026-06-02T14:00:01")
+
+    sell_order = MagicMock()
+    sell_order.symbol         = "AAPL"
+    sell_order.side           = "sell"
+    sell_order.order_type     = "market"
+    sell_order.status         = "filled"
+    sell_order.filled_avg_price = 97.5
+    sell_order.filled_at      = "2026-06-02T15:00:00"
+    sell_order.submitted_at   = "2026-06-02T15:00:00"
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = [buy_order, sell_order]
+    # Bracket legs not filled
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "stop", "canceled", 0.0
+    )
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    mock_update.assert_called_once()
+    kwargs = mock_update.call_args[0][2]
+    assert kwargs["status"]         == "CLOSED"
+    assert kwargs["close_reason"]   == "MANUAL_CLOSE"
+    assert kwargs["close_price"]    == pytest.approx(97.5)
+    assert kwargs["realized_pnl"]   == pytest.approx((97.5 - 100.0) * 10)
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
+def test_reconcile_market_sell_ignored_before_entry(mock_get, mock_select, mock_update):
+    """A market sell that predates the position open must not be used as close price."""
+    from agents.alpaca_broker import _reconcile_with_alpaca
+
+    pos = _pos(fill=100.0, shares=10)
+    pos["ticker"]          = "AAPL"
+    pos["status"]          = "OPEN"
+    pos["alpaca_order_id"] = "parent-order-abc"
+    pos["opened_at"]       = "2026-06-02T15:00:00"
+
+    buy_order = _buy_order("AAPL", status="filled", submitted_at="2026-06-02T15:00:01")
+
+    # Sell from a prior trade — earlier than opened_at
+    old_sell = MagicMock()
+    old_sell.symbol           = "AAPL"
+    old_sell.side             = "sell"
+    old_sell.order_type       = "market"
+    old_sell.status           = "filled"
+    old_sell.filled_avg_price = 90.0
+    old_sell.filled_at        = "2026-06-02T14:00:00"  # before opened_at
+    old_sell.submitted_at     = "2026-06-02T14:00:00"
+
+    mock_get.return_value.get_all_positions.return_value = []
+    mock_get.return_value.get_orders.return_value = [buy_order, old_sell]
+    mock_get.return_value.get_order_by_id.return_value = _bracket_order_with_leg(
+        "stop", "canceled", 0.0
+    )
+    mock_select.return_value = [pos]
+
+    _reconcile_with_alpaca()
+
+    # Old sell must not trigger a close — no db.update
+    mock_update.assert_not_called()
+
+
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker._get")
 def test_reconcile_datetime_filled_at_not_string(mock_get, mock_select, mock_update):
     """filled_at is a datetime object — str() wrap must prevent AttributeError."""
     from datetime import datetime
