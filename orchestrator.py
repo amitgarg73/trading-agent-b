@@ -406,20 +406,19 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         print(f"  🏆 Intraday scan skipped: bonus target reached (${total:,.2f})")
         return
 
-    # SPY gate — require SPY up ≥MIN_SPY_MOVE_PCT% for intraday entries.
-    # Prevents opening positions on flat/down market days where momentum setups fail.
-    if broker == "alpaca":
-        try:
-            from agents.alpaca_broker import get_intraday_signals
-            _spy_pct = get_intraday_signals(["SPY"]).get("SPY", {}).get("today_pct_change", 0)
-            _threshold = MIN_SPY_MOVE_PCT * 100
-            if _spy_pct < _threshold:
-                print(f"  ⛔ Intraday scan skipped: SPY {_spy_pct:+.2f}% < {_threshold:.1f}% gate")
-                _save_intraday_scan(today, now_utc, {"candidates": 0, "reason": f"SPY gate {_spy_pct:+.2f}%"})
-                return
-            print(f"  ✅ SPY gate: {_spy_pct:+.2f}% ≥ {_threshold:.1f}% — intraday scan allowed")
-        except Exception as _e:
-            print(f"  ⚠️  SPY gate check failed: {_e} — proceeding anyway")
+    # SPY gate — TEMPORARILY DISABLED
+    # if broker == "alpaca":
+    #     try:
+    #         from agents.alpaca_broker import get_intraday_signals
+    #         _spy_pct = get_intraday_signals(["SPY"]).get("SPY", {}).get("today_pct_change", 0)
+    #         _threshold = MIN_SPY_MOVE_PCT * 100
+    #         if _spy_pct < _threshold:
+    #             print(f"  ⛔ Intraday scan skipped: SPY {_spy_pct:+.2f}% < {_threshold:.1f}% gate")
+    #             _save_intraday_scan(today, now_utc, {"candidates": 0, "reason": f"SPY gate {_spy_pct:+.2f}%"})
+    #             return
+    #         print(f"  ✅ SPY gate: {_spy_pct:+.2f}% ≥ {_threshold:.1f}% — intraday scan allowed")
+    #     except Exception as _e:
+    #         print(f"  ⚠️  SPY gate check failed: {_e} — proceeding anyway")
 
     # Re-run pool filter live — independent of premarket plan
     from scanner.pool_filter import get_pool3_tickers
@@ -724,15 +723,16 @@ def premarket(broker: str = "alpaca") -> None:
         if dropped_top:
             print(f"    Top-of-range filter: dropped {dropped_top} near-day-high candidate(s)")
 
-        # SPY premarket gate — if SPY opened negative, reduce slots instead of skipping entirely.
+        # SPY premarket gate — TEMPORARILY DISABLED
         _n_after_filters = len(candidates)
         _spy_pct = intraday_sigs.get("SPY", {}).get("today_pct_change", None)
-        if _spy_pct is not None and _spy_pct < 0:
-            _max_positions_today = max(0, MAX_POSITIONS - 3)
-            print(f"    ⚠️  SPY premarket: {_spy_pct:+.2f}% — market opened negative. "
-                  f"Reducing max positions {MAX_POSITIONS}→{_max_positions_today}.")
-        elif _spy_pct is not None:
-            print(f"    SPY premarket: {_spy_pct:+.2f}% ✅")
+        # if _spy_pct is not None and _spy_pct < 0:
+        #     _max_positions_today = max(0, MAX_POSITIONS - 3)
+        #     print(f"    ⚠️  SPY premarket: {_spy_pct:+.2f}% — market opened negative. "
+        #           f"Reducing max positions {MAX_POSITIONS}→{_max_positions_today}.")
+        # elif _spy_pct is not None:
+        if _spy_pct is not None:
+            print(f"    SPY premarket: {_spy_pct:+.2f}% (gate disabled)")
 
     # 3.4 Persist premarket scan candidates for observability
     _premarket_candidate_fields = [
