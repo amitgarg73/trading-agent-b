@@ -345,8 +345,9 @@ def _cancel_bracket_stop_leg(order_id: str) -> None:
     try:
         o = _get().get_order_by_id(order_id)
         for leg in (o.legs or []):
-            leg_status = str(getattr(leg.status, "value", str(leg.status))).lower()
-            if "cancel" not in leg_status and "fill" not in leg_status:
+            leg_type   = str(getattr(leg.order_type, "value", str(leg.order_type))).lower()
+            leg_status = str(getattr(leg.status,     "value", str(leg.status))).lower()
+            if "trailing" not in leg_type and "cancel" not in leg_status and "fill" not in leg_status:
                 try:
                     _get().cancel_order_by_id(str(leg.id))
                 except Exception:
