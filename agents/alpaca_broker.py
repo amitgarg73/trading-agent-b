@@ -534,7 +534,7 @@ def update_positions_intraday() -> dict:
         if pos.get("fill_price") is None and pos.get("alpaca_order_id"):
             try:
                 order  = _get().get_order_by_id(pos["alpaca_order_id"])
-                status = str(getattr(order, "status", "")).lower()
+                status = str(getattr(order.status, "value", str(order.status))).lower()
                 if status in ("filled", "partially_filled") and order.filled_avg_price:
                     fp = float(order.filled_avg_price)
                     db.update("b_positions", {"id": pos["id"]}, {
