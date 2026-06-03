@@ -76,3 +76,46 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Verify premarket wrote DB record
+        if: steps.mode.outputs.mode == 'premarket'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          from datetime import date
+          from supabase import create_client
+          sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+          today = date.today().isoformat()
+          rows = sb.table("b_scan_results").select("id").eq("date", today).eq("scan_type", "premarket").execute().data
+          if not rows:
+              print(f"ASSERTION FAILED: no premarket record in b_scan_results for {today}")
+              sys.exit(1)
+          print(f"Assertion passed: premarket record found for {today}")
+          PY
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ALERT_EMAIL:        amit.thirdeyetrading@gmail.com
+        run: |
+          python - <<'PY'
+          import os, smtplib
+          from email.mime.text import MIMEText
+          mode = "${{ steps.mode.outputs.mode }}"
+          repo = "${{ github.repository }}"
+          run  = "${{ github.run_id }}"
+          url  = f"https://github.com/{repo}/actions/runs/{run}"
+          msg  = MIMEText(f"Strategy B {mode} workflow FAILED.\n\nLogs: {url}")
+          msg["Subject"] = f"[Strategy B] {mode} FAILED"
+          msg["From"]    = os.environ["GMAIL_USER"]
+          msg["To"]      = os.environ["ALERT_EMAIL"]
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+              s.login(os.environ["GMAIL_USER"], os.environ["GMAIL_APP_PASSWORD"])
+              s.send_message(msg)
+          print("Failure alert sent.")
+          PY

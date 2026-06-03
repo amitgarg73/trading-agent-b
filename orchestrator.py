@@ -1017,11 +1017,22 @@ if __name__ == "__main__":
     parser.add_argument("--broker", default="alpaca", choices=["alpaca", "simulation"])
     args = parser.parse_args()
 
-    if args.mode == "premarket":
-        premarket(args.broker)
-    elif args.mode == "intraday":
-        intraday(args.broker)
-    elif args.mode == "entry_scan":
-        entry_scan(args.broker)
-    elif args.mode == "eod":
-        eod(args.broker)
+    try:
+        if args.mode == "premarket":
+            premarket(args.broker)
+        elif args.mode == "intraday":
+            intraday(args.broker)
+        elif args.mode == "entry_scan":
+            entry_scan(args.broker)
+        elif args.mode == "eod":
+            eod(args.broker)
+    except Exception as e:
+        import traceback as _tb
+        try:
+            _log_run_b(args.mode, "failed", {
+                "error":     str(e),
+                "traceback": _tb.format_exc()[-3000:],
+            })
+        except Exception:
+            pass
+        raise

@@ -1,53 +1,43 @@
-name: Intraday Entry Scan
+name: Daily Morning Report
 
 on:
   schedule:
-    # 10:30 AM and 11:30 AM ET only (14:30, 15:30 UTC) — data shows 0 targets after noon; cutoff moved to 12:00 PM ET
-    - cron: '30 14,15 * * 1-5'
-  workflow_dispatch:
-    inputs:
-      broker:
-        description: 'Broker'
-        required: false
-        default: 'alpaca'
-        type: choice
-        options: [alpaca, simulation]
+    - cron: '30 14 * * 1-5'   # 10:30 AM ET (14:30 UTC) — after all premarket sessions complete
+  workflow_dispatch:           # manual trigger any time
 
 jobs:
-  run:
+  report:
+    name: Send daily report
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - uses: actions/checkout@v4.2.2
 
       - uses: actions/setup-python@v5.6.0
         with:
           python-version: '3.11'
-          cache: 'pip'
+          cache: pip
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run entry scan
+      - name: Send daily report
         env:
-          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          # Strategy B (same project as this repo)
           SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
-          ALPACA_API_KEY:     ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY:  ${{ secrets.ALPACA_SECRET_KEY }}
-        run: |
-          for attempt in 1 2 3; do
-            echo "▶ Attempt $attempt of 3"
-            python orchestrator.py --mode entry_scan --broker ${{ github.event.inputs.broker || 'alpaca' }} && break
-            if [ $attempt -lt 3 ]; then
-              echo "  ⚠️ Attempt $attempt failed — retrying in 60s..."
-              sleep 60
-            else
-              echo "  ❌ All 3 attempts failed"
-              exit 1
-            fi
-          done
+          # Strategy A (add SUPABASE_URL_A / SUPABASE_KEY_A secrets if separate project;
+          # falls back to B creds if A and B share a Supabase project)
+          SUPABASE_URL_A:     ${{ secrets.SUPABASE_URL_A }}
+          SUPABASE_KEY_A:     ${{ secrets.SUPABASE_KEY_A }}
+          # Strategy C
+          SUPABASE_URL_C:     ${{ secrets.SUPABASE_URL_C }}
+          SUPABASE_KEY_C:     ${{ secrets.SUPABASE_KEY_C }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python daily_report.py
 
       - name: Notify on failure
         if: failure()
@@ -62,8 +52,8 @@ jobs:
           repo = "${{ github.repository }}"
           run  = "${{ github.run_id }}"
           url  = f"https://github.com/{repo}/actions/runs/{run}"
-          msg  = MIMEText(f"Strategy B entry_scan FAILED.\n\nLogs: {url}")
-          msg["Subject"] = "[Strategy B] entry_scan FAILED"
+          msg  = MIMEText(f"Daily report script FAILED.\n\nLogs: {url}")
+          msg["Subject"] = "[Trading] Daily report FAILED"
           msg["From"]    = os.environ["GMAIL_USER"]
           msg["To"]      = os.environ["ALERT_EMAIL"]
           with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
