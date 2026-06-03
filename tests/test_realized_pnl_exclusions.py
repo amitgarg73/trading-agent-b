@@ -119,6 +119,7 @@ class TestAlpacaBrokerRealizedPnl:
              patch("agents.alpaca_broker.db.update"), \
              patch("agents.alpaca_broker.get_current_price", return_value=current_price), \
              patch("agents.alpaca_broker.get_intraday_signals", return_value={}), \
+             patch("agents.alpaca_broker.get_open_tickers", return_value=set()), \
              patch("agents.alpaca_broker._close_position", mock_close):
             from agents.alpaca_broker import update_positions_intraday
             update_positions_intraday()
