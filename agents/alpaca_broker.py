@@ -483,7 +483,6 @@ def _reconcile_with_alpaca() -> None:
             db.update("b_positions", {"id": pos["id"]}, {
                 "status":         "CLOSED",
                 "close_reason":   "NATIVE_TRAIL",
-                "exit_reason":    "NATIVE_TRAIL",
                 "exit_mechanism": "NATIVE_TRAIL",
                 "close_price":    close_price,
                 "realized_pnl":   pnl,
@@ -508,7 +507,6 @@ def _reconcile_with_alpaca() -> None:
                     db.update("b_positions", {"id": pos["id"]}, {
                         "status":         "CLOSED",
                         "close_reason":   mechanism or "BRACKET",
-                        "exit_reason":    mechanism or "BRACKET",
                         "exit_mechanism": mechanism or "BRACKET",
                         "close_price":    close_price,
                         "realized_pnl":   pnl,
@@ -535,7 +533,6 @@ def _reconcile_with_alpaca() -> None:
             db.update("b_positions", {"id": pos["id"]}, {
                 "status":         "CLOSED",
                 "close_reason":   "MANUAL_CLOSE",
-                "exit_reason":    "MANUAL_CLOSE",
                 "exit_mechanism": "MANUAL_CLOSE",
                 "close_price":    fallback_price,
                 "realized_pnl":   pnl,
@@ -558,7 +555,6 @@ def _reconcile_with_alpaca() -> None:
             db.update("b_positions", {"id": pos["id"]}, {
                 "status":         "CLOSED",
                 "close_reason":   "UNFILLED",
-                "exit_reason":    "UNFILLED",
                 "exit_mechanism": "UNFILLED",
                 "closed_at":      datetime.utcnow().isoformat(),
                 "realized_pnl":   0,
@@ -770,7 +766,7 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
         print(f"[alpaca] {ticker} no open position in Alpaca — marking DB closed (already filled by prior cycle)")
         db.update("b_positions", {"id": pos["id"]}, {
             "status": "CLOSED", "close_price": price,
-            "realized_pnl": pnl, "close_reason": reason, "exit_reason": reason,
+            "realized_pnl": pnl, "close_reason": reason,
             "closed_at": datetime.utcnow().isoformat(), "exit_mechanism": reason,
         })
         return
@@ -837,7 +833,6 @@ def _close_position(pos: dict, price: float, reason: str) -> None:
         "close_price":    price,
         "realized_pnl":   pnl,
         "close_reason":   reason,
-        "exit_reason":    reason,
         "closed_at":      datetime.utcnow().isoformat(),
         "exit_mechanism": reason,
         "mae":            mae,
