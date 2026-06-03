@@ -517,43 +517,55 @@ def _reconcile_with_alpaca() -> None:
                         "mfe":            round(max(0.0, (hwm  - entry) * shares), 2),
                     })
                     print(f"  ✅ Bracket exit: {pos['ticker']} → {mechanism} @ ${close_price:.2f} P&L=${pnl:+.2f}")
-                else:
-                    # Bracket legs didn't fire — check if our own market sell closed it
-                    # (happens when _close_position() ran but its DB write failed).
-                    opened_at = str(pos.get("opened_at") or "")[:19]
-                    fallback_price = next(
-                        (fp for ts, fp in market_sells_by_ticker.get(pos["ticker"], [])
-                         if ts[:19] >= opened_at),
-                        None,
-                    )
-                    if fallback_price:
-                        entry  = float(pos.get("fill_price") or pos["entry_price"])
-                        shares = int(pos["shares"])
-                        pnl    = round(shares * (fallback_price - entry), 2)
-                        db.update("b_positions", {"id": pos["id"]}, {
-                            "status":         "CLOSED",
-                            "close_reason":   "MANUAL_CLOSE",
-                            "exit_reason":    "MANUAL_CLOSE",
-                            "exit_mechanism": "MANUAL_CLOSE",
-                            "close_price":    fallback_price,
-                            "realized_pnl":   pnl,
-                            "closed_at":      datetime.utcnow().isoformat(),
-                        })
-                        print(f"  🔧 Market-sell recovery: {pos['ticker']} @ ${fallback_price:.2f} P&L={pnl:+.2f}")
-                    else:
-                        print(f"  ⚠️  {pos['ticker']} gone from Alpaca but no close price found — stays OPEN, will retry next cycle")
+                    continue
+
+        # Market sell recovery — runs for any position not in Alpaca, regardless of
+        # whether the entry was today. Catches: _close_position() DB write failure
+        # (EOD crash), or previous-day positions closed by EOD/trail after market close.
+        opened_at = str(pos.get("opened_at") or "")[:19]
+        fallback_price = next(
+            (fp for ts, fp in market_sells_by_ticker.get(pos["ticker"], [])
+             if ts[:19] >= opened_at),
+            None,
+        )
+        if fallback_price:
+            entry  = float(pos.get("fill_price") or pos["entry_price"])
+            shares = int(pos["shares"])
+            pnl    = round(shares * (fallback_price - entry), 2)
+            db.update("b_positions", {"id": pos["id"]}, {
+                "status":         "CLOSED",
+                "close_reason":   "MANUAL_CLOSE",
+                "exit_reason":    "MANUAL_CLOSE",
+                "exit_mechanism": "MANUAL_CLOSE",
+                "close_price":    fallback_price,
+                "realized_pnl":   pnl,
+                "closed_at":      datetime.utcnow().isoformat(),
+            })
+            print(f"  🔧 Market-sell recovery: {pos['ticker']} @ ${fallback_price:.2f} P&L={pnl:+.2f}")
             continue
-        # No filled buy and no pending buy — entry truly never executed
-        print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")
-        db.update("b_positions", {"id": pos["id"]}, {
-            "status":         "CLOSED",
-            "close_reason":   "UNFILLED",
-            "exit_reason":    "UNFILLED",
-            "exit_mechanism": "UNFILLED",
-            "closed_at":      datetime.utcnow().isoformat(),
-            "realized_pnl":   0,
-            "close_price":    pos.get("entry_price"),
-        })
+
+        if pos["ticker"] in filled_buys:
+            # Bracket didn't fire and no market sell found — leave OPEN for next cycle.
+            print(f"  ⚠️  {pos['ticker']} gone from Alpaca but no close price found — stays OPEN, will retry next cycle")
+            continue
+
+        # No market sell found. Only mark UNFILLED for positions entered today or with
+        # no opened_at — previous-day positions may have been closed by EOD/trail
+        # with no order visible in today's window; leave them OPEN to avoid wiping P&L.
+        pos_date = str(pos.get("opened_at") or "")[:10]
+        if not pos_date or pos_date == today:
+            print(f"  ⚠️  Reconciliation: {pos['ticker']} OPEN in DB but not in Alpaca — marking UNFILLED")
+            db.update("b_positions", {"id": pos["id"]}, {
+                "status":         "CLOSED",
+                "close_reason":   "UNFILLED",
+                "exit_reason":    "UNFILLED",
+                "exit_mechanism": "UNFILLED",
+                "closed_at":      datetime.utcnow().isoformat(),
+                "realized_pnl":   0,
+                "close_price":    pos.get("entry_price"),
+            })
+        else:
+            print(f"  ⚠️  {pos['ticker']} not in Alpaca (opened {pos_date}) — no close evidence in today's orders, leaving OPEN")
 
 
 def update_positions_intraday() -> dict:
