@@ -26,7 +26,7 @@ def send_alert(subject: str, body: str) -> bool:
             f"{_NTFY_SERVER}/{topic}",
             data=body.encode("utf-8"),
             headers={
-                "Title":        subject,
+                "Title":        subject.encode("ascii", errors="replace").decode("ascii"),
                 "Priority":     "high",
                 "Content-Type": "text/plain",
             },

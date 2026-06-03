@@ -56,7 +56,7 @@ def check_stale_positions() -> bool:
         if stale:
             tickers = ", ".join(p["ticker"] for p in stale)
             send_alert(
-                f"[Strategy B] Stale open positions — {today}",
+                f"[Strategy B] Stale open positions - {today}",
                 f"Positions carrying overnight: {tickers}\n"
                 "EOD force-close may have failed or been missed.\n"
                 "Check Alpaca and close manually if needed.",
@@ -82,7 +82,7 @@ def check_eod_ran(check_date: str) -> bool:
             return True
 
         send_alert(
-            f"[Strategy B] EOD session MISSED — {check_date}",
+            f"[Strategy B] EOD session MISSED - {check_date}",
             f"No EOD run detected for {check_date}.\n"
             "Open positions may be carrying overnight. "
             "Check Alpaca and run EOD manually:\n"
