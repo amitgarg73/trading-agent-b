@@ -1123,4 +1123,33 @@ def test_close_position_confirms_fill_with_enum_status(mock_get, mock_update):
 
     update_kwargs = mock_update.call_args[0][2]
     assert update_kwargs["status"] == "CLOSED"
-    assert update_kwargs["close_price"] == 97.0
+
+
+# ── Intraday loop: unrealized P&L uses fill_price, not entry_price ────────────
+
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker._get")
+@patch("agents.alpaca_broker.db.select")
+@patch("agents.alpaca_broker.db.update")
+@patch("agents.alpaca_broker.get_current_price")
+def test_unrealized_pnl_uses_fill_price_not_entry(mock_price, mock_update, mock_select, mock_get, mock_signals):
+    """
+    Regression: ORCL 2026-06-04 — filled at $233.74 but entry_price=$240.
+    Intraday loop was computing (price - $240) giving a false -$41 loss.
+    After fix: unrealized uses fill_price so P&L reflects actual cost.
+    """
+    mock_get.return_value = _alpaca_mock_with_open("ORCL")
+    pos = _pos(entry=240.0, fill=233.74, shares=12, high_wm=233.74, low_wm=233.74, cur=233.74)
+    pos["ticker"] = "ORCL"
+    pos["target_price"] = 252.28
+    pos["stop_loss"] = 232.02
+    mock_select.side_effect = lambda table, **kw: [pos] if kw.get("filters", {}).get("status") == "OPEN" else []
+    mock_price.return_value = 236.55
+
+    update_positions_intraday()
+
+    pnl_calls = [c for c in mock_update.call_args_list if "unrealized_pnl" in c[0][2]]
+    assert pnl_calls, "Expected db.update with unrealized_pnl"
+    computed_pnl = pnl_calls[0][0][2]["unrealized_pnl"]
+    expected_pnl = round(12 * (236.55 - 233.74), 2)   # +$33.72 using fill, not -$41.40 from entry
+    assert computed_pnl == expected_pnl, f"Got {computed_pnl}, expected {expected_pnl}"

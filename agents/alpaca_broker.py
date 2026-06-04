@@ -630,7 +630,7 @@ def update_positions_intraday() -> dict:
         if price is None:
             continue
 
-        entry    = float(pos["entry_price"])
+        entry    = float(pos.get("fill_price") or pos["entry_price"])
         target   = float(pos["target_price"])
         stop     = float(pos["stop_loss"])
         shares   = int(pos["shares"])
