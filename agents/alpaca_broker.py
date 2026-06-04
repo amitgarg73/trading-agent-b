@@ -644,10 +644,13 @@ def update_positions_intraday() -> dict:
                 order_id = pos.get("alpaca_order_id")
                 if order_id:
                     _cancel_bracket_stop_leg(order_id)
+                    time.sleep(2)  # wait for Alpaca to process bracket leg cancellation
                 trail_id = submit_trailing_stop(pos["ticker"], int(pos["shares"]), TRAIL_PCT)
                 if trail_id:
                     db.update("b_positions", {"id": pos["id"]}, {"trail_order_id": trail_id})
                     print(f"  [trail] Backfilled trail for {pos['ticker']}: {trail_id[:8]}")
+                else:
+                    print(f"  [trail] ⚠️  Backfill trail still pending for {pos['ticker']} — will retry next cycle")
 
     today_realized = sum(
         r.get("realized_pnl") or 0

@@ -1085,6 +1085,39 @@ def test_trail_backfill_calls_cancel_stop_leg(mock_get, mock_db, mock_price, moc
     assert len(cancel_calls) >= 1, "_cancel_bracket_stop_leg must be called during backfill"
 
 
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_trail_backfill_logs_warning_when_trail_fails(
+    mock_get, mock_db, mock_price, mock_signals, capsys
+):
+    """When trail submission fails (e.g. bracket legs still held), backfill logs a warning
+    and leaves trail_order_id None for retry on the next cycle."""
+    pos = _open_pos_no_trail()
+    alpaca_pos = MagicMock(); alpaca_pos.symbol = "ORCL"
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+    # submit_order raises "insufficient qty" — bracket legs still held
+    mock_get.return_value.submit_order.side_effect = Exception("insufficient qty available")
+    mock_db.select.return_value = [pos]
+    mock_db.update.return_value = None
+
+    import agents.alpaca_broker as broker_mod
+    with patch.object(broker_mod, "_cancel_bracket_stop_leg"):
+        update_positions_intraday()
+
+    out = capsys.readouterr().out
+    assert "still pending" in out or "trail" in out.lower(), \
+        "Expected warning log when trail backfill fails"
+    # DB should NOT be updated with a trail_order_id
+    trail_updates = [c for c in mock_db.update.call_args_list
+                     if "trail_order_id" in str(c)]
+    assert len(trail_updates) == 0, "trail_order_id must not be written when submission failed"
+
+
 # ── Double-sell guard ─────────────────────────────────────────────────────────
 
 @patch("agents.alpaca_broker.db.update")
