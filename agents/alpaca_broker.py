@@ -258,9 +258,21 @@ def place_orders(trades: list[dict], run_id: str | None = None) -> list[dict]:
                         saved = round((qt["ask"] - limit_px) * shares, 2)
                         print(f"[alpaca] {ticker} mid-price limit: ask={qt['ask']:.2f} limit={limit_px:.2f} saves ~${saved:.2f}")
             else:
-                entry_price  = round(plan_ask, 2)
-                stop_price   = round(float(trade["stop_loss"]), 2)
-                target_price = round(float(trade["target_price"]), 2)
+                # No bid/ask pair (premarket ask=0 is common on IEX feed).
+                # Fall back to get_live_prices() which accepts ask-only or bid-only.
+                # Anchors stop/target to that price so they stay valid relative to fill.
+                live_px = get_live_prices([ticker]).get(ticker)
+                if live_px and abs(live_px - plan_ask) / plan_ask > 0.005:
+                    plan_stop_pct   = (trade["entry_price"] - float(trade["stop_loss"]))   / trade["entry_price"]
+                    plan_target_pct = (float(trade["target_price"]) - trade["entry_price"]) / trade["entry_price"]
+                    entry_price  = round(live_px, 2)
+                    stop_price   = round(live_px * (1 - plan_stop_pct), 2)
+                    target_price = round(live_px * (1 + plan_target_pct), 2)
+                    print(f"[alpaca] {ticker} no bid/ask pair — live price ${live_px:.2f} used (scan was ${plan_ask:.2f})")
+                else:
+                    entry_price  = round(plan_ask, 2)
+                    stop_price   = round(float(trade["stop_loss"]), 2)
+                    target_price = round(float(trade["target_price"]), 2)
 
             req = LimitOrderRequest(
                 symbol=ticker,

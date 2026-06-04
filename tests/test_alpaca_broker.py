@@ -723,6 +723,80 @@ def test_place_orders_extreme_spread_skips(mock_get, mock_quotes):
     mock_broker.submit_order.assert_not_called()
 
 
+@patch("agents.alpaca_broker.get_live_prices")
+@patch("agents.alpaca_broker.get_live_quotes")
+@patch("agents.alpaca_broker._get")
+def test_place_orders_no_bid_ask_falls_back_to_live_price(mock_get, mock_quotes, mock_live_prices):
+    """Premarket: get_live_quotes returns {} (ask=0 on IEX feed).
+    Fallback to get_live_prices() — if live price differs from scan price by > 0.5%,
+    use it as the limit and re-anchor stop/target so they remain valid vs fill."""
+    import agents.alpaca_broker as broker_mod
+    from alpaca.trading.requests import LimitOrderRequest
+
+    # No bid/ask pair available (premarket)
+    mock_quotes.return_value = {}
+    # get_live_prices returns actual market price — 3.2% below scan price
+    mock_live_prices.return_value = {"JPM": 310.49}
+
+    filled = MagicMock(); filled.id = "ord-jpm"; filled.status = "filled"
+    filled.filled_avg_price = 310.49
+    mock_get.return_value.submit_order.return_value = MagicMock(id="ord-jpm")
+    mock_get.return_value.get_order_by_id.return_value = filled
+
+    # Scan price $320.84 — stop/target calculated from that stale price
+    trade = {
+        "ticker": "JPM", "shares": 9, "pool": 2, "action": "BUY",
+        "entry_price": 320.84, "target_price": 327.69, "stop_loss": 301.38,
+        "position_size": 2888, "confidence": "MEDIUM",
+    }
+
+    with patch("agents.alpaca_broker.db"):
+        broker_mod.place_orders([trade])
+
+    bracket_req = mock_get.return_value.submit_order.call_args_list[0][0][0]
+    assert isinstance(bracket_req, LimitOrderRequest)
+    # Limit must be the live price, not the stale scan price
+    assert bracket_req.limit_price == pytest.approx(310.49, abs=0.01), \
+        f"Expected limit=310.49 (live), got {bracket_req.limit_price}"
+    # Stop must be re-anchored to live price, not stale stop
+    stop_pct = (320.84 - 301.38) / 320.84  # original plan stop %
+    expected_stop = round(310.49 * (1 - stop_pct), 2)
+    assert bracket_req.stop_loss.stop_price == pytest.approx(expected_stop, abs=0.02), \
+        f"Expected stop={expected_stop} (live-anchored), got {bracket_req.stop_loss.stop_price}"
+
+
+@patch("agents.alpaca_broker.get_live_prices")
+@patch("agents.alpaca_broker.get_live_quotes")
+@patch("agents.alpaca_broker._get")
+def test_place_orders_no_bid_ask_uses_scan_price_when_live_matches(mock_get, mock_quotes, mock_live_prices):
+    """When live price is within 0.5% of scan price, skip the re-anchoring and use plan values directly."""
+    import agents.alpaca_broker as broker_mod
+    from alpaca.trading.requests import LimitOrderRequest
+
+    mock_quotes.return_value = {}
+    mock_live_prices.return_value = {"AAPL": 150.20}  # < 0.5% from plan 150.0
+
+    filled = MagicMock(); filled.id = "ord-aapl"; filled.status = "filled"
+    filled.filled_avg_price = 150.0
+    mock_get.return_value.submit_order.return_value = MagicMock(id="ord-aapl")
+    mock_get.return_value.get_order_by_id.return_value = filled
+
+    trade = {
+        "ticker": "AAPL", "shares": 10, "pool": 2, "action": "BUY",
+        "entry_price": 150.0, "target_price": 156.0, "stop_loss": 147.0,
+        "position_size": 1500, "confidence": "MEDIUM",
+    }
+
+    with patch("agents.alpaca_broker.db"):
+        broker_mod.place_orders([trade])
+
+    bracket_req = mock_get.return_value.submit_order.call_args_list[0][0][0]
+    assert isinstance(bracket_req, LimitOrderRequest)
+    # Uses plan price since live and scan prices are within 0.5%
+    assert bracket_req.limit_price == pytest.approx(150.0, abs=0.01)
+    assert bracket_req.stop_loss.stop_price == pytest.approx(147.0, abs=0.01)
+
+
 # ── hybrid_limit_price ────────────────────────────────────────────────────────
 
 from agents.alpaca_broker import hybrid_limit_price
