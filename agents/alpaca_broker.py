@@ -632,11 +632,29 @@ def update_positions_intraday() -> dict:
             except Exception as e:
                 print(f"  ⚠️  fill_backfill: {pos.get('ticker')} order query failed: {e}")
 
+    # Sync shares: Alpaca is authoritative for actually-held qty.
+    # Partial fills (entry partially filled then cancelled) leave DB shares > actual.
+    # Must run before trail backfill so the corrected qty is used there.
+    alpaca_qtys: dict[str, int] = {}
+    _qtys_loaded = False
+    try:
+        alpaca_qtys = {p.symbol: int(float(p.qty)) for p in _get().get_all_positions()}
+        _qtys_loaded = True
+        for pos in positions:
+            actual = alpaca_qtys.get(pos["ticker"])
+            db_qty = int(pos["shares"])
+            if actual is not None and actual > 0 and actual != db_qty:
+                db.update("b_positions", {"id": pos["id"]}, {"shares": actual})
+                pos["shares"] = actual
+                print(f"  [qty_sync] {pos['ticker']} shares corrected: {db_qty} → {actual}")
+    except Exception as e:
+        print(f"  ⚠️  qty_sync: {e}")
+
     # Backfill trailing stops for confirmed-filled positions that have none.
     # Bracket legs are TimeInForce.DAY — they expire at EOD. Multi-day positions
     # lose both bracket and trail protection after day 1. Detect and resubmit here.
     if USE_NATIVE_TRAILING_STOP:
-        alpaca_open = get_open_tickers()
+        alpaca_open = set(alpaca_qtys) if _qtys_loaded else get_open_tickers()
         for pos in positions:
             if (pos.get("trail_order_id") is None
                     and pos.get("fill_price") is not None

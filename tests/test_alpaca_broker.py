@@ -32,13 +32,15 @@ def _filled_order(close_price: float) -> MagicMock:
     return o
 
 
-def _alpaca_mock_with_open(ticker: str = "AAPL") -> MagicMock:
+def _alpaca_mock_with_open(ticker: str = "AAPL", qty: int = 10) -> MagicMock:
     """
     Return a mock _get() return value where `ticker` exists as an open Alpaca position.
     This makes _reconcile_with_alpaca() skip the position (no ghost-position action).
+    qty must match the test position's shares so qty_sync doesn't fire unexpectedly.
     """
     pos_mock = MagicMock()
     pos_mock.symbol = ticker
+    pos_mock.qty = str(qty)
     client = MagicMock()
     client.get_all_positions.return_value = [pos_mock]
     return client
@@ -894,6 +896,88 @@ def test_trail_backfill_skipped_when_not_in_alpaca(
     assert len(trail_calls) == 0, "Trail must not be submitted if position not confirmed in Alpaca"
 
 
+# ── Qty sync (partial-fill correction) ───────────────────────────────────────
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", False)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_qty_sync_corrects_partial_fill(mock_get, mock_db, mock_price, mock_signals):
+    """When Alpaca holds fewer shares than DB (partial fill + cancel), shares is corrected."""
+    pos = _open_pos_no_trail(shares=12)
+
+    alpaca_pos = MagicMock()
+    alpaca_pos.symbol = "ORCL"
+    alpaca_pos.qty = "8"  # Alpaca string — partial fill
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+    mock_db.select.return_value = [pos]
+    mock_db.update.return_value = None
+
+    update_positions_intraday()
+
+    qty_updates = [c for c in mock_db.update.call_args_list if "shares" in str(c)]
+    assert len(qty_updates) >= 1, "Expected DB update to correct shares"
+    updated_qty = qty_updates[0][0][2]["shares"]
+    assert updated_qty == 8, f"Expected shares=8, got {updated_qty}"
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", False)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_qty_sync_skipped_when_shares_match(mock_get, mock_db, mock_price, mock_signals):
+    """No DB update when Alpaca qty matches DB shares."""
+    pos = _open_pos_no_trail(shares=12)
+
+    alpaca_pos = MagicMock()
+    alpaca_pos.symbol = "ORCL"
+    alpaca_pos.qty = "12"
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+    mock_db.select.return_value = [pos]
+    mock_db.update.return_value = None
+
+    update_positions_intraday()
+
+    qty_updates = [c for c in mock_db.update.call_args_list if "shares" in str(c)]
+    assert len(qty_updates) == 0, "No shares update expected when qty already matches"
+
+
+@patch("agents.alpaca_broker.USE_NATIVE_TRAILING_STOP", True)
+@patch("agents.alpaca_broker.TRAIL_PCT", 0.01)
+@patch("agents.alpaca_broker.get_intraday_signals", return_value={})
+@patch("agents.alpaca_broker.get_current_price", return_value=222.0)
+@patch("agents.alpaca_broker.db")
+@patch("agents.alpaca_broker._get")
+def test_trail_backfill_uses_corrected_shares(mock_get, mock_db, mock_price, mock_signals):
+    """After qty_sync corrects shares to 8, trail backfill submits for 8 shares not 12."""
+    pos = _open_pos_no_trail(shares=12)
+
+    alpaca_pos = MagicMock()
+    alpaca_pos.symbol = "ORCL"
+    alpaca_pos.qty = "8"
+    mock_get.return_value.get_all_positions.return_value = [alpaca_pos]
+    mock_get.return_value.get_orders.return_value = []
+
+    trail_order = MagicMock(); trail_order.id = "trail-partial-001"
+    mock_get.return_value.submit_order.return_value = trail_order
+    mock_db.select.return_value = [pos]
+    mock_db.update.return_value = None
+
+    import agents.alpaca_broker as broker_mod
+    with patch.object(broker_mod, "_cancel_bracket_stop_leg"):
+        update_positions_intraday()
+
+    submitted = mock_get.return_value.submit_order.call_args_list
+    trail_calls = [c for c in submitted if hasattr(c[0][0], "trail_percent")]
+    assert len(trail_calls) >= 1, "Trail must be submitted"
+    req = trail_calls[0][0][0]
+    assert int(req.qty) == 8, f"Trail must use corrected qty=8, got {req.qty}"
+
+
 # ── Manual trailing stop fallback ────────────────────────────────────────────
 
 def _pos_no_trail(entry=100.0, fill=100.0, shares=10, high_wm=115.0, stop=95.0, price=111.5):
@@ -1171,7 +1255,7 @@ def test_unrealized_pnl_uses_fill_price_not_entry(mock_price, mock_update, mock_
     Intraday loop was computing (price - $240) giving a false -$41 loss.
     After fix: unrealized uses fill_price so P&L reflects actual cost.
     """
-    mock_get.return_value = _alpaca_mock_with_open("ORCL")
+    mock_get.return_value = _alpaca_mock_with_open("ORCL", qty=12)
     pos = _pos(entry=240.0, fill=233.74, shares=12, high_wm=233.74, low_wm=233.74, cur=233.74)
     pos["ticker"] = "ORCL"
     pos["target_price"] = 252.28
