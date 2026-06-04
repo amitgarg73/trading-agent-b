@@ -10,7 +10,10 @@ Alpaca mode: snapshot API (today_pct_change, above_vwap, rs_vs_spy) + SPY/sector
 Simulation mode: yfinance 5-min data. No SPY gate (used for dev/backtest).
 """
 from __future__ import annotations
-from config.settings import MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT, SCORE_THRESHOLD, STRONG_SECTOR_THRESHOLD
+from config.settings import (
+    MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT, SCORE_THRESHOLD, STRONG_SECTOR_THRESHOLD,
+    STALE_MOVE_THRESHOLD_PCT, FRESH_MOMENTUM_MIN_PCT,
+)
 
 # Sector ETFs to check as SPY-gate override
 _SECTOR_ETFS = ["XLK", "XLF", "XLV", "XLY", "XLE", "XLI"]
@@ -75,6 +78,12 @@ def scan_alpaca(universe: list[str]) -> list[dict]:
         if not above_vwap:
             continue
 
+        pct_15m = sig.get("change_pct_15m", 0.0)
+        if pct >= STALE_MOVE_THRESHOLD_PCT and pct_15m < FRESH_MOMENTUM_MIN_PCT:
+            print(f"        [intraday-b] {ticker} stale: up {pct:.1f}% today "
+                  f"but only {pct_15m:+.2f}% in last 15m — skipping")
+            continue
+
         score = _momentum_score(pct, rs)
         price = live.get(ticker) or sig.get("vwap") or 0
 
@@ -87,6 +96,7 @@ def scan_alpaca(universe: list[str]) -> list[dict]:
             "entry_price":      price,
             "above_vwap":       above_vwap,
             "today_pct_change": pct,
+            "change_pct_15m":   pct_15m,
             "rs_vs_spy":        rs,
             "vwap":             sig.get("vwap"),
             "rsi":              50,

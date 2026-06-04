@@ -74,6 +74,8 @@ INTRADAY_TARGET_PCT             = 0.01
 MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal)
 MIN_SPY_MOVE_PCT                = 0.0    # SPY gate disabled — no minimum SPY move required for intraday entries
 STRONG_SECTOR_THRESHOLD         = 2.0   # sector ETF up >= this % overrides SPY gate on rotation days
+STALE_MOVE_THRESHOLD_PCT        = 1.5   # total intraday move above this triggers freshness check
+FRESH_MOMENTUM_MIN_PCT          = 0.3   # last-15-min change must be >= this when total move is stale
 
 # Pool system thresholds
 POOL_PROMOTION_SCORE   = 6.0    # 7-day rolling score to promote Pool 1 → Pool 2

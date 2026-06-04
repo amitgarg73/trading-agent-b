@@ -110,20 +110,56 @@ def hybrid_limit_price(ask: float, bid: float) -> float | None:
     return round((ask + bid) / 2, 2)            # was ask — now mid
 
 
+def _get_change_pct_15m(tickers: list[str]) -> dict[str, float]:
+    """
+    Fetch 1-minute bars for the last 20 minutes and return the % change
+    from ~15 minutes ago to the latest bar close for each ticker.
+    Returns {ticker: change_pct_15m}. Missing tickers return 0.0.
+    """
+    if not tickers:
+        return {}
+    try:
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        from datetime import timezone
+        now   = datetime.now(timezone.utc)
+        start = now - timedelta(minutes=20)
+        bars  = _dclient().get_stock_bars(
+            StockBarsRequest(symbol_or_symbols=tickers, timeframe=TimeFrame.Minute,
+                             start=start, end=now)
+        )
+        result = {}
+        for ticker in tickers:
+            ticker_bars = bars.get(ticker) or []
+            if len(ticker_bars) < 2:
+                result[ticker] = 0.0
+                continue
+            oldest_close = float(ticker_bars[0].close)
+            latest_close = float(ticker_bars[-1].close)
+            result[ticker] = round(
+                (latest_close - oldest_close) / oldest_close * 100, 2
+            ) if oldest_close > 0 else 0.0
+        return result
+    except Exception as e:
+        print(f"        ⚠️  15m bar fetch failed (non-fatal): {e}")
+        return {}
+
+
 def get_intraday_signals(tickers: list[str]) -> dict[str, dict]:
     """
     Fetch intraday signals via Alpaca snapshot API.
-    Returns {ticker: {above_vwap, vwap, today_pct_change, rs_vs_spy}}.
-    SPY is fetched as the RS baseline.
+    Returns {ticker: {above_vwap, vwap, today_pct_change, rs_vs_spy, change_pct_15m}}.
+    SPY is fetched as the RS baseline. change_pct_15m detects stale moves.
     """
     if not tickers:
         return {}
     all_tickers = list(set(tickers + ["SPY"]))
     try:
         from alpaca.data.requests import StockSnapshotRequest
-        snapshots = _dclient().get_stock_snapshot(
+        snapshots    = _dclient().get_stock_snapshot(
             StockSnapshotRequest(symbol_or_symbols=all_tickers)
         )
+        recent_moves = _get_change_pct_15m(tickers)
 
         spy_snap = snapshots.get("SPY")
         spy_pct  = None
@@ -157,6 +193,7 @@ def get_intraday_signals(tickers: list[str]) -> dict[str, dict]:
                 "rs_vs_spy":        rs_vs_spy,
                 "day_high":         round(day_high, 2),
                 "day_low":          round(day_low, 2),
+                "change_pct_15m":   recent_moves.get(ticker, 0.0),
             }
         return signals
     except Exception as e:
