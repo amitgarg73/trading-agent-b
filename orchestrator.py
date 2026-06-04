@@ -46,7 +46,8 @@ def _premarket_summary(
     fg_lbl = mkt.get("fear_greed_label", "")
     vix    = mkt.get("vix_level", "?")
     bias   = mkt.get("futures_bias", "?")
-    spy_m  = mkt.get("spy_change_pct", spy_pct or 0)
+    _spc  = mkt.get("spy_change_pct")
+    spy_m = _spc if _spc is not None else (spy_pct or 0)
     sectors = mkt.get("sector_rotation", {})
     leaders  = [(k, v) for k, v in sorted(sectors.items(), key=lambda x: -x[1]) if v > 0][:3]
     laggards = [(k, v) for k, v in sorted(sectors.items(), key=lambda x: x[1])  if v < 0][:3]
