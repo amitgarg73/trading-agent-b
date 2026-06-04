@@ -662,6 +662,21 @@ def premarket(broker: str = "alpaca") -> None:
         candidates = candidates + gap_injected
         print(f"    Gap-up injection: {len(gap_injected)} new mover(s) added → {len(candidates)} total")
 
+    # 3.15 Garbage data filter — remove warrants and illiquid securities that
+    # return price=0 or rsi=None from yfinance (nothing to trade, Claude will hallucinate).
+    pre_garbage = len(candidates)
+    candidates = [
+        c for c in candidates
+        if (c.get("price") or c.get("current_price") or 0) > 0
+        and c.get("rsi") is not None
+    ]
+    dropped_garbage = pre_garbage - len(candidates)
+    if dropped_garbage:
+        print(f"    Garbage filter: removed {dropped_garbage} ticker(s) with missing price/RSI data")
+    if not candidates:
+        print("        No candidates after garbage filter.")
+        return
+
     # 3.2 Live price refresh + VWAP enrichment via Alpaca snapshot (batch call)
     if broker == "alpaca":
         from concurrent.futures import ThreadPoolExecutor
@@ -703,12 +718,11 @@ def premarket(broker: str = "alpaca") -> None:
         if dropped:
             print(f"    Extension filter: dropped {dropped} extended-low-vol candidate(s)")
 
-        # Drop stocks still inside the opening range — price below ORB high = no breakout.
-        pre_orb = len(candidates)
-        candidates = [c for c in candidates if c.get("above_orb") is not False]
-        dropped_orb = pre_orb - len(candidates)
-        if dropped_orb:
-            print(f"    ORB filter: dropped {dropped_orb} inside-range candidate(s)")
+        # ORB as signal only — price below ORB is logged but not hard-filtered.
+        # Claude sees the above_orb field and factors it into its decision.
+        orb_below = sum(1 for c in candidates if c.get("above_orb") is False)
+        if orb_below:
+            print(f"    ORB signal: {orb_below} candidate(s) below opening range (passed to Claude)")
 
         # Drop stocks in the top 15% of today's day range — near-day-high entries have little
         # upside and high retracement risk.
