@@ -161,7 +161,7 @@ def _section_a(data: dict) -> str:
     if closed:
         lines.append(f"  Closed today ({len(closed)}): net {_pnl_str(net)}")
         for p in closed:
-            lines.append(f"    {p.get('ticker'):6s} {p.get('close_reason',''):15s} {_pnl_str(p.get('realized_pnl'))}")
+            lines.append(f"    {(p.get('ticker') or '?'):6s} {p.get('close_reason',''):15s} {_pnl_str(p.get('realized_pnl'))}")
     else:
         lines.append("  Positions closed today: none")
 
@@ -208,7 +208,7 @@ def _section_b(data: dict) -> str:
     if closed:
         lines.append(f"  Closed today ({len(closed)}): net {_pnl_str(net)}")
         for p in closed:
-            lines.append(f"    {p.get('ticker'):6s} {p.get('close_reason',''):15s} {_pnl_str(p.get('realized_pnl'))}")
+            lines.append(f"    {(p.get('ticker') or '?'):6s} {p.get('close_reason',''):15s} {_pnl_str(p.get('realized_pnl'))}")
     else:
         lines.append("  Positions closed today: none")
 
@@ -256,7 +256,7 @@ def _section_c(data: dict) -> str:
     if closed:
         lines.append(f"  Closed today ({len(closed)}): net {_pnl_str(net)}")
         for p in closed:
-            lines.append(f"    {p.get('ticker'):6s} {p.get('close_reason',''):15s} {_pnl_str(p.get('realized_pnl'))}")
+            lines.append(f"    {(p.get('ticker') or '?'):6s} {p.get('close_reason',''):15s} {_pnl_str(p.get('realized_pnl'))}")
     else:
         lines.append("  Positions closed today: none")
 
