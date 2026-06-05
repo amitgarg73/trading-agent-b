@@ -10,7 +10,7 @@ from datetime import date, datetime
 from scanner.scanner import run_scan
 from scanner.pool_filter import get_pool3_tickers, get_pool3_with_context
 from agents import strategy, risk, guardrails, market_context, news_intel, sector_guard
-from agents.alpaca_broker import place_orders, update_positions_intraday, close_all_positions, open_positions
+from agents.alpaca_broker import place_orders, update_positions_intraday, close_all_positions, open_positions, reconcile_eod_stale_opens
 from agents.pool_scorer import score_today, write_daily_performance
 from core import db, ledger
 from core.alerts import send_alert
@@ -987,11 +987,13 @@ def eod(broker: str = "alpaca") -> None:
         print("[1] Closing all open positions...")
         if broker == "alpaca":
             closed = close_all_positions(reason="EOD")
+            reconcile_eod_stale_opens(wait_s=30)
         else:
             print("    Simulation mode — skipping close")
             closed = []
 
         # Alert if any position that was open before EOD is still open after close
+        # (only fires if reconcile_eod_stale_opens() also could not resolve them)
         if broker == "alpaca" and open_before:
             open_before_ids = {p["id"] for p in open_before}
             open_after = db.select("b_positions", filters={"status": "OPEN"})

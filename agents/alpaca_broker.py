@@ -822,6 +822,84 @@ def close_all_positions(reason: str = "EOD") -> list[dict]:
     return closed
 
 
+def reconcile_eod_stale_opens(wait_s: int = 30) -> list[str]:
+    """
+    Post-EOD sweep: mark any DB-OPEN positions as CLOSED if Alpaca no longer
+    holds them. Called after close_all_positions() to catch the case where the
+    15s per-order confirmation window timed out but the fill actually went through.
+
+    Returns list of tickers that were reconciled.
+    """
+    print(f"[alpaca] EOD reconcile: waiting {wait_s}s for fills to settle...")
+    time.sleep(wait_s)
+
+    positions = open_positions()
+    if not positions:
+        return []
+
+    try:
+        alpaca_tickers = get_open_tickers()
+    except Exception as e:
+        print(f"[alpaca] EOD reconcile: could not fetch Alpaca positions — {e}")
+        return []
+
+    stale = [p for p in positions if p["ticker"] not in alpaca_tickers]
+    if not stale:
+        print("[alpaca] EOD reconcile: no stale opens found")
+        return []
+
+    # Fetch recent sell orders to get actual fill prices
+    try:
+        from datetime import timezone, timedelta
+        today_start = datetime.utcnow().replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=timezone.utc
+        )
+        all_orders = _get().get_orders(
+            GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500, after=today_start)
+        )
+        sell_fills: dict[str, list[tuple[str, float]]] = {}
+        for o in all_orders:
+            if (getattr(o.side, "value", str(o.side)) == "sell"
+                    and getattr(o.status, "value", str(o.status)) == "filled"
+                    and o.filled_avg_price):
+                ts = str(o.filled_at or o.submitted_at or "")
+                sell_fills.setdefault(str(o.symbol), []).append((ts, float(o.filled_avg_price)))
+        for t in sell_fills:
+            sell_fills[t].sort(key=lambda x: x[0])
+    except Exception as e:
+        print(f"[alpaca] EOD reconcile: order fetch failed — {e}")
+        sell_fills = {}
+
+    reconciled = []
+    for pos in stale:
+        ticker    = pos["ticker"]
+        entry     = float(pos.get("fill_price") or pos["entry_price"])
+        shares    = int(pos["shares"])
+        opened_at = str(pos.get("opened_at") or "")[:19]
+
+        fill_price = next(
+            (fp for ts, fp in sell_fills.get(ticker, []) if ts[:19] >= opened_at),
+            None,
+        )
+        if fill_price is None:
+            print(f"[alpaca] EOD reconcile: {ticker} — no fill price found, leaving OPEN")
+            continue
+
+        pnl = round(shares * (fill_price - entry), 2)
+        db.update("b_positions", {"id": pos["id"]}, {
+            "status":         "CLOSED",
+            "close_price":    fill_price,
+            "realized_pnl":   pnl,
+            "close_reason":   "EOD",
+            "closed_at":      datetime.utcnow().isoformat(),
+            "exit_mechanism": "EOD",
+        })
+        print(f"[alpaca] EOD reconcile: {ticker} @ ${fill_price:.2f} P&L=${pnl:+.2f}")
+        reconciled.append(ticker)
+
+    return reconciled
+
+
 def _close_position(pos: dict, price: float, reason: str) -> None:
     ticker  = pos["ticker"]
     shares  = int(pos["shares"])
