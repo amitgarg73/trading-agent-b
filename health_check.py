@@ -111,11 +111,12 @@ def check_pool_seeded() -> bool:
 
 if __name__ == "__main__":
     # Auto-detect mode from UTC hour:
-    #   pre-open  (< 17 UTC = before 1 PM ET): check yesterday's EOD + connectivity
-    #   post-EOD  (≥ 17 UTC = after  1 PM ET): check today's EOD + stale positions
+    #   pre-open  (< 20 UTC = before 4 PM ET): check yesterday's EOD + connectivity
+    #   post-EOD  (≥ 20 UTC = after  4 PM ET): check today's EOD + stale positions
+    # Threshold is 20:00 UTC so EOD (19:55 UTC) always finishes before post-EOD check.
     utc_hour = datetime.now(timezone.utc).hour
     today    = date.today()
-    is_pre_open = utc_hour < 17
+    is_pre_open = utc_hour < 20
 
     print(f"\n{'='*55}")
     mode_label = "PRE-OPEN" if is_pre_open else "POST-EOD"
