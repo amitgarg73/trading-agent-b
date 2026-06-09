@@ -1,11 +1,6 @@
 name: Trading Agent B
 
 on:
-  schedule:
-    # All times UTC (EDT = UTC-4)
-    - cron: '0 14 * * 1-5'              # 10:00 AM ET — premarket
-    - cron: '*/15 14-19 * * 1-5'        # Every 15 min 10:00-3:59 PM ET — intraday (entry cutoff 3:00 PM ET)
-    - cron: '55 19 * * 1-5'             # 3:55 PM ET — EOD (before market close at 4:00 PM)
   workflow_dispatch:
     inputs:
       mode:
