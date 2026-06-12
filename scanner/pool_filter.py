@@ -455,11 +455,21 @@ def get_pool3_tickers() -> list[str]:
 
     metrics.sort(key=lambda x: x["filter_score"], reverse=True)
     passing  = [m for m in metrics if m["filter_score"] > POOL3_MIN_FILTER_SCORE]
-    selected = [m["ticker"] for m in passing[:POOL3_SIZE]]
 
+    # Fallback: if fewer than 3 pass the quality floor, relax the threshold once.
+    # Low-volatility days produce weak signals on all stocks — strict AND-filtering
+    # leaves nothing for Claude to evaluate. Better to surface borderline candidates
+    # than to send an empty list.
+    if len(passing) < 3:
+        FALLBACK_SCORE = -1.0
+        passing = [m for m in metrics if m["filter_score"] > FALLBACK_SCORE]
+        if passing:
+            print(f"[pool_filter] relaxed floor to {FALLBACK_SCORE} — {len(passing)} candidate(s) available")
+
+    selected = [m["ticker"] for m in passing[:POOL3_SIZE]]
     skipped = len(metrics) - len(passing)
     if skipped:
-        print(f"[pool_filter] {skipped} stock(s) below quality floor (score <= {POOL3_MIN_FILTER_SCORE}) — excluded")
+        print(f"[pool_filter] {skipped} stock(s) below quality floor — excluded")
     print(f"[pool_filter] Pool 3 today ({len(selected)} stocks): {selected}")
     return selected
 
@@ -483,4 +493,6 @@ def get_pool3_with_context() -> list[dict]:
 
     metrics.sort(key=lambda x: x["filter_score"], reverse=True)
     passing = [m for m in metrics if m["filter_score"] > POOL3_MIN_FILTER_SCORE]
+    if len(passing) < 3:
+        passing = [m for m in metrics if m["filter_score"] > -1.0]
     return passing[:POOL3_SIZE]
