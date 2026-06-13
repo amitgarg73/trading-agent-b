@@ -475,12 +475,22 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         candidates = candidates[:token_cap]
 
         mkt = market_context.get()
+        if open_pos:
+            op_lines = []
+            for p in open_pos:
+                entry = float(p.get("entry_price") or 0)
+                upnl  = float(p.get("unrealized_pnl") or 0)
+                op_lines.append(f"{p['ticker']} (entry ${entry:.2f}, ${upnl:+.0f} unrealized)")
+            open_pos_note = f" OPEN POSITIONS — do NOT select: {', '.join(op_lines)}."
+        else:
+            open_pos_note = ""
         mkt_with_note = {
             **mkt,
             "note": (
                 f"INTRADAY SCAN #{run_num}: Focus on Pool 3 momentum plays already moving today. "
                 f"Use standard {TARGET_PCT*100:.0f}% targets. "
                 f"The trailing stop ({TRAIL_PCT*100:.0f}%) is the real exit; the target is a safety ceiling."
+                f"{open_pos_note}"
             ),
         }
 

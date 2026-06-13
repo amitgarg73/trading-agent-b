@@ -204,3 +204,71 @@ class TestRunIdThreadingB:
         """In simulation mode, place_orders is not called (trades used directly)."""
         _, _, mock_place = _run_b_intraday_scan(broker="simulation")
         assert not mock_place.called
+
+
+# ── Open position context tests ───────────────────────────────────────────────
+
+class TestOpenPositionContextInPromptB:
+    """Open positions must appear in the market_context note passed to strategy.select_trades()."""
+
+    def _run_with_open_pos_capture(self, open_pos_rows):
+        """Run scan with given open positions and capture the market_context arg."""
+        captured_ctx = []
+
+        def capture_strategy(candidates, mkt_ctx, pool3_ctx, **kw):
+            captured_ctx.append(mkt_ctx)
+            return {"trades": []}
+
+        def db_select(table, **kw):
+            f = kw.get("filters", {})
+            if table == "b_scan_results" and f.get("scan_type") == "intraday_scan":
+                return []
+            if table == "b_positions" and f.get("status") == "CLOSED":
+                return [{"realized_pnl": 100.0, "status": "CLOSED"}]
+            if table == "b_trade_plans":
+                return [{"id": "plan-001"}]
+            return []
+
+        with patch("orchestrator.datetime") as mock_dt, \
+             patch("orchestrator.date") as mock_date, \
+             patch("core.db.select", side_effect=db_select), \
+             patch("core.db.insert", return_value={"id": "x"}), \
+             patch("core.db.update"), \
+             patch("orchestrator.open_positions", return_value=open_pos_rows), \
+             patch("orchestrator._today_realized_pnl", return_value=100.0), \
+             patch("scanner.pool_filter.get_pool3_tickers", return_value=["AAPL", "NVDA"]), \
+             patch("scanner.intraday_momentum.scan", return_value=[{"ticker": "NVDA", "technical_score": 6}]), \
+             patch("orchestrator._get_gap_up_tickers", return_value=[]), \
+             patch("agents.market_context.get", return_value={"summary": "flat"}), \
+             patch("agents.strategy.select_trades", side_effect=capture_strategy):
+            mock_dt.utcnow.return_value = _utc_now()
+            mock_dt.fromisoformat.side_effect = real_datetime.fromisoformat
+            mock_date.today.return_value = _TODAY_DATE
+            from orchestrator import _maybe_run_intraday_scan
+            _maybe_run_intraday_scan(broker="simulation")
+
+        return captured_ctx[0] if captured_ctx else {}
+
+    def test_open_positions_appear_in_note(self):
+        open_pos = [{"ticker": "AAPL", "entry_price": 200.0, "unrealized_pnl": 50.0}]
+        ctx = self._run_with_open_pos_capture(open_pos)
+        note = ctx.get("note", "")
+        assert "OPEN POSITIONS" in note
+        assert "AAPL" in note
+        assert "$200.00" in note
+        assert "50" in note   # format: $+50 unrealized
+
+    def test_no_open_pos_note_omitted(self):
+        ctx = self._run_with_open_pos_capture([])
+        note = ctx.get("note", "")
+        assert "OPEN POSITIONS" not in note
+
+    def test_multiple_open_positions_all_listed(self):
+        open_pos = [
+            {"ticker": "AAPL", "entry_price": 200.0, "unrealized_pnl": 50.0},
+            {"ticker": "MSFT", "entry_price": 420.0, "unrealized_pnl": -20.0},
+        ]
+        ctx = self._run_with_open_pos_capture(open_pos)
+        note = ctx.get("note", "")
+        assert "AAPL" in note
+        assert "MSFT" in note
