@@ -2,6 +2,7 @@
 Regression tests for Strategy B intraday pipeline filter changes:
 1. Garbage data filter — rejects candidates with price=0 or rsi=None
 2. ORB downgrade — above_orb=False no longer hard-filters; data still passed to Claude
+3. Extension filter — threshold rises to 5% on strong up days (avg futures >= 2%)
 """
 from __future__ import annotations
 
@@ -112,3 +113,78 @@ class TestORBDowngrade:
         result, below = _apply_orb_signal(candidates)
         assert len(result) == 1
         assert below == 0
+
+
+# ── Extension filter — market-context-aware threshold ────────────────────────
+
+def _avg_futures(futures: dict) -> float:
+    if not futures:
+        return 0.0
+    return sum(v["change_pct"] for v in futures.values()) / len(futures)
+
+
+def _apply_extension_filter(candidates: list[dict], futures: dict) -> tuple[list[dict], float]:
+    avg_fut = _avg_futures(futures)
+    threshold = 5.0 if avg_fut >= 2.0 else 3.0
+    result = [
+        c for c in candidates
+        if not (
+            (c.get("today_pct_change") or 0) > threshold
+            and (c.get("volume_ratio") or 0) < 0.7
+        )
+    ]
+    return result, threshold
+
+
+class TestExtensionFilter:
+
+    def _futures(self, avg_pct: float) -> dict:
+        return {"S&P500": {"change_pct": avg_pct, "price": 5000.0}}
+
+    def test_normal_day_drops_above_3pct_low_vol(self):
+        candidates = [
+            _make_candidate(ticker="NVDA", today_pct_change=3.5, volume_ratio=0.4),
+            _make_candidate(ticker="AAPL", today_pct_change=1.5, volume_ratio=0.4),
+        ]
+        result, threshold = _apply_extension_filter(candidates, self._futures(0.5))
+        assert threshold == 3.0
+        assert len(result) == 1
+        assert result[0]["ticker"] == "AAPL"
+
+    def test_strong_up_day_keeps_stocks_up_to_5pct(self):
+        candidates = [
+            _make_candidate(ticker="NVDA", today_pct_change=3.5, volume_ratio=0.4),
+            _make_candidate(ticker="AMD",  today_pct_change=4.8, volume_ratio=0.5),
+        ]
+        result, threshold = _apply_extension_filter(candidates, self._futures(2.5))
+        assert threshold == 5.0
+        assert len(result) == 2
+
+    def test_strong_up_day_still_drops_above_5pct_low_vol(self):
+        candidates = [
+            _make_candidate(ticker="NVDA", today_pct_change=5.5, volume_ratio=0.3),
+            _make_candidate(ticker="AAPL", today_pct_change=3.5, volume_ratio=0.4),
+        ]
+        result, threshold = _apply_extension_filter(candidates, self._futures(3.0))
+        assert threshold == 5.0
+        assert len(result) == 1
+        assert result[0]["ticker"] == "AAPL"
+
+    def test_high_volume_never_filtered_regardless_of_pct(self):
+        candidates = [
+            _make_candidate(ticker="TSLA", today_pct_change=6.0, volume_ratio=0.8),
+        ]
+        result, _ = _apply_extension_filter(candidates, self._futures(0.3))
+        assert len(result) == 1
+
+    def test_exactly_2pct_futures_triggers_strong_threshold(self):
+        candidates = [_make_candidate(ticker="MSFT", today_pct_change=3.5, volume_ratio=0.5)]
+        result, threshold = _apply_extension_filter(candidates, self._futures(2.0))
+        assert threshold == 5.0
+        assert len(result) == 1
+
+    def test_no_futures_data_uses_default_threshold(self):
+        candidates = [_make_candidate(ticker="AMZN", today_pct_change=3.5, volume_ratio=0.4)]
+        result, threshold = _apply_extension_filter(candidates, {})
+        assert threshold == 3.0
+        assert len(result) == 0

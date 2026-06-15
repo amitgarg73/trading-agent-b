@@ -716,17 +716,24 @@ def premarket(broker: str = "alpaca") -> None:
         print(f"    Live price: {updated}/{len(candidates)} updated | VWAP: {enriched}/{len(candidates)} enriched — {above_vwap} above VWAP")
 
         # Drop stocks already extended from open on weak volume (chasing exhausted momentum).
+        # On strong up days (avg futures ≥ 2%), raise threshold to 5% — a 3% move is
+        # just market participation, not exhaustion.
+        _fut_vals = mkt.get("futures") or {}
+        _avg_fut  = (sum(v["change_pct"] for v in _fut_vals.values()) / len(_fut_vals)
+                     if _fut_vals else 0.0)
+        _ext_threshold = 5.0 if _avg_fut >= 2.0 else 3.0
         pre_ext = len(candidates)
         candidates = [
             c for c in candidates
             if not (
-                (c.get("today_pct_change") or 0) > 3.0
+                (c.get("today_pct_change") or 0) > _ext_threshold
                 and (c.get("volume_ratio") or 0) < 0.7
             )
         ]
         dropped = pre_ext - len(candidates)
         if dropped:
-            print(f"    Extension filter: dropped {dropped} extended-low-vol candidate(s)")
+            print(f"    Extension filter: dropped {dropped} extended-low-vol candidate(s) "
+                  f"(threshold: {_ext_threshold:.0f}%, avg futures: {_avg_fut:+.1f}%)")
 
         # ORB as signal only — price below ORB is logged but not hard-filtered.
         # Claude sees the above_orb field and factors it into its decision.
