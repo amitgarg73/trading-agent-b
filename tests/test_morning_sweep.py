@@ -186,6 +186,7 @@ class TestEodPartialCloseAlertB:
              patch("orchestrator._log_run_b"), \
              patch("orchestrator.open_positions", return_value=open_before), \
              patch("orchestrator.close_all_positions", return_value=["AAPL"]), \
+             patch("orchestrator.reconcile_eod_stale_opens"), \
              patch("core.db.select", side_effect=[[], open_after_eod]), \
              patch("core.db.insert"), \
              patch("orchestrator.score_today", return_value={"scored": 0, "promoted": 0, "demoted": 0}), \
@@ -208,6 +209,7 @@ class TestEodPartialCloseAlertB:
              patch("orchestrator._log_run_b"), \
              patch("orchestrator.open_positions", return_value=open_before), \
              patch("orchestrator.close_all_positions", return_value=["AAPL"]), \
+             patch("orchestrator.reconcile_eod_stale_opens"), \
              patch("core.db.select", side_effect=[[], []]), \
              patch("core.db.insert"), \
              patch("orchestrator.score_today", return_value={"scored": 0, "promoted": 0, "demoted": 0}), \

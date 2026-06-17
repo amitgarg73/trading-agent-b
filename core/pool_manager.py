@@ -16,26 +16,48 @@ from config.settings import POOL_PROMOTION_SCORE, POOL_DEMOTION_SCORE
 
 
 def seed_pools_if_empty() -> None:
-    """Seed b_pools with initial Pool 1 and Pool 2 stocks if table is empty."""
-    existing = db.select("b_pools", limit=1)
-    if existing:
+    """Seed b_pools on first run, then sync POOL_2_SEED additions on subsequent runs.
+
+    First run: inserts all POOL_2_SEED (pool=2) and POOL_1_UNIVERSE (pool=1).
+    Subsequent runs: adds any POOL_2_SEED stocks missing from the table and
+    moves any POOL_2_SEED stocks that were incorrectly assigned to Pool 1.
+    This handles the case where blue_chips.py is updated after initial seeding.
+    """
+    existing_rows = db.select("b_pools")
+    existing = {r["ticker"]: r.get("pool") for r in existing_rows}
+
+    if not existing:
+        rows = []
+        for ticker in POOL_2_SEED:
+            rows.append({"ticker": ticker, "pool": 2, "added_at": str(date.today())})
+        for ticker in POOL_1_UNIVERSE:
+            if ticker not in POOL_2_SEED:
+                rows.append({"ticker": ticker, "pool": 1, "added_at": str(date.today())})
+        for row in rows:
+            try:
+                db.insert("b_pools", row)
+            except Exception:
+                pass
+        print(f"[pool_manager] Seeded {len(POOL_2_SEED)} Pool 2 stocks, "
+              f"{len(POOL_1_UNIVERSE)} Pool 1 stocks")
         return
 
-    rows = []
+    # Sync: add missing seed stocks and fix any in wrong pool
+    added, moved = [], []
     for ticker in POOL_2_SEED:
-        rows.append({"ticker": ticker, "pool": 2, "added_at": str(date.today())})
-    for ticker in POOL_1_UNIVERSE:
-        if ticker not in POOL_2_SEED:
-            rows.append({"ticker": ticker, "pool": 1, "added_at": str(date.today())})
+        current_pool = existing.get(ticker)
+        if current_pool is None:
+            try:
+                db.insert("b_pools", {"ticker": ticker, "pool": 2, "added_at": str(date.today())})
+                added.append(ticker)
+            except Exception:
+                pass
+        elif current_pool != 2:
+            db.update("b_pools", {"ticker": ticker}, {"pool": 2})
+            moved.append(ticker)
 
-    for row in rows:
-        try:
-            db.insert("b_pools", row)
-        except Exception:
-            pass  # already exists
-
-    print(f"[pool_manager] Seeded {len(POOL_2_SEED)} Pool 2 stocks, "
-          f"{len(POOL_1_UNIVERSE)} Pool 1 stocks")
+    if added or moved:
+        print(f"[pool_manager] Sync: added to pool2={added}, moved to pool2={moved}")
 
 
 def get_pool(pool_number: int) -> list[str]:
