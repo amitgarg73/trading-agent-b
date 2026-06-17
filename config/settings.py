@@ -58,7 +58,7 @@ POSITION_SIZE_BY_CONFIDENCE = {
 
 # Scanner thresholds — tighter for blue chip quality
 RSI_OVERSOLD         = 35
-RSI_OVERBOUGHT       = 65
+RSI_OVERBOUGHT       = 75
 MIN_VOLUME_RATIO     = 0.3         # vs 20-day avg
 MIN_PRICE            = 15.0        # blue chips only — higher floor
 MIN_AVG_VOLUME       = 5_000_000   # 5M+ avg volume (blue chip floor)

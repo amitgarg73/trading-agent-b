@@ -678,7 +678,11 @@ def premarket(broker: str = "alpaca") -> None:
     candidates = [
         c for c in candidates
         if (c.get("price") or c.get("current_price") or 0) > 0
-        and c.get("rsi") is not None
+        and (
+            c.get("rsi") is not None
+            or "pool3_context" in (c.get("signals") or [])
+            or c.get("_source") == "gap_up"
+        )
     ]
     dropped_garbage = pre_garbage - len(candidates)
     if dropped_garbage:
@@ -728,6 +732,7 @@ def premarket(broker: str = "alpaca") -> None:
             if not (
                 (c.get("today_pct_change") or 0) > _ext_threshold
                 and (c.get("volume_ratio") or 0) < 0.7
+                and (c.get("rs_vs_spy") or 0) < 1.5
             )
         ]
         dropped = pre_ext - len(candidates)
@@ -751,6 +756,7 @@ def premarket(broker: str = "alpaca") -> None:
                 and (c["day_high"] - c["day_low"]) > 0
                 and ((c.get("current_price") or c.get("price") or 0) - c["day_low"]) /
                     (c["day_high"] - c["day_low"]) > 0.85
+                and (c.get("rs_vs_spy") or 0) < 1.5
             )
         ]
         dropped_top = pre_top - len(candidates)

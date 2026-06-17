@@ -31,7 +31,11 @@ def _apply_garbage_filter(candidates: list[dict]) -> list[dict]:
     return [
         c for c in candidates
         if (c.get("price") or c.get("current_price") or 0) > 0
-        and c.get("rsi") is not None
+        and (
+            c.get("rsi") is not None
+            or "pool3_context" in (c.get("signals") or [])
+            or c.get("_source") == "gap_up"
+        )
     ]
 
 
@@ -72,6 +76,21 @@ class TestGarbageFilter:
     def test_passes_when_current_price_set_but_not_price(self):
         c = [_make_candidate(ticker="XYZ", price=0.0, current_price=45.0, rsi=52.0)]
         assert len(_apply_garbage_filter(c)) == 1
+
+    def test_passes_pool3_context_candidate_without_rsi(self):
+        """pool3_missed entries (Alpaca-sourced, no RSI) must survive the garbage filter."""
+        c = [_make_candidate(ticker="NVDA", rsi=None, signals=["pool3_context"])]
+        assert len(_apply_garbage_filter(c)) == 1
+
+    def test_passes_gap_up_candidate_without_rsi(self):
+        """gap_up injections have _source=gap_up and no RSI — must survive."""
+        c = [_make_candidate(ticker="META", rsi=None, signals=["gap_up"], **{"_source": "gap_up"})]
+        assert len(_apply_garbage_filter(c)) == 1
+
+    def test_still_rejects_pool3_context_with_zero_price(self):
+        """Even pool3_context candidate must have a valid price."""
+        c = [_make_candidate(ticker="NVDA", price=0.0, current_price=0.0, rsi=None, signals=["pool3_context"])]
+        assert len(_apply_garbage_filter(c)) == 0
 
 
 # ── ORB downgrade — signal not gate ──────────────────────────────────────────
@@ -131,6 +150,7 @@ def _apply_extension_filter(candidates: list[dict], futures: dict) -> tuple[list
         if not (
             (c.get("today_pct_change") or 0) > threshold
             and (c.get("volume_ratio") or 0) < 0.7
+            and (c.get("rs_vs_spy") or 0) < 1.5
         )
     ]
     return result, threshold
