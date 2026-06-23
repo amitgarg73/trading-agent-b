@@ -6,7 +6,7 @@ All orders include strategy_b tag via client_order_id prefix.
 from __future__ import annotations
 import os
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest, LimitOrderRequest, GetOrdersRequest,

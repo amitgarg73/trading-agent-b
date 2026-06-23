@@ -11,12 +11,21 @@ Simulation mode: yfinance 5-min data. No SPY gate (used for dev/backtest).
 """
 from __future__ import annotations
 from config.settings import (
-    MIN_INTRADAY_MOVE_PCT, MIN_SPY_MOVE_PCT, SCORE_THRESHOLD, STRONG_SECTOR_THRESHOLD,
+    MIN_INTRADAY_MOVE_PCT, MIN_INTRADAY_MOVE_PCT_BY_REGIME, MIN_SPY_MOVE_PCT,
+    SCORE_THRESHOLD, STRONG_SECTOR_THRESHOLD,
     STALE_MOVE_THRESHOLD_PCT, FRESH_MOMENTUM_MIN_PCT,
 )
 
 # Sector ETFs to check as SPY-gate override
 _SECTOR_ETFS = ["XLK", "XLF", "XLV", "XLY", "XLE", "XLI"]
+
+
+def min_move_for_regime(regime: str | None) -> float:
+    """Per-stock intraday move threshold for the day's regime — falls back to the base
+    MIN_INTRADAY_MOVE_PCT when regime is unknown/None (default behavior unchanged)."""
+    if not regime:
+        return MIN_INTRADAY_MOVE_PCT
+    return MIN_INTRADAY_MOVE_PCT_BY_REGIME.get(regime, MIN_INTRADAY_MOVE_PCT)
 
 
 def _momentum_score(pct_change: float, rs_vs_spy: float | None) -> int:
@@ -32,14 +41,15 @@ def _momentum_score(pct_change: float, rs_vs_spy: float | None) -> int:
     return min(10, base)
 
 
-def scan_alpaca(universe: list[str]) -> list[dict]:
+def scan_alpaca(universe: list[str], regime: str | None = None) -> list[dict]:
     """
     Option 2 market-participation scan via Alpaca snapshot API.
     Gate 1: SPY >= MIN_SPY_MOVE_PCT OR any sector ETF >= STRONG_SECTOR_THRESHOLD.
             Sector override catches rotation days (e.g. semis +6%, SPY flat).
-    Gate 2: stock above VWAP AND up >= MIN_INTRADAY_MOVE_PCT (0.5%) — confirms participation.
+    Gate 2: stock above VWAP AND up >= the regime-aware move threshold — confirms participation.
     """
     from agents import alpaca_broker
+    min_move = min_move_for_regime(regime)
 
     # Include SPY + sector ETFs for gate check
     fetch = list(set(universe + ["SPY"] + _SECTOR_ETFS))
@@ -71,7 +81,7 @@ def scan_alpaca(universe: list[str]) -> list[dict]:
         above_vwap = sig.get("above_vwap", False)
         rs         = sig.get("rs_vs_spy")
 
-        if pct < MIN_INTRADAY_MOVE_PCT:
+        if pct < min_move:
             continue
         if pct > 30:
             continue
@@ -108,12 +118,13 @@ def scan_alpaca(universe: list[str]) -> list[dict]:
     return candidates
 
 
-def scan_simulation(universe: list[str]) -> list[dict]:
+def scan_simulation(universe: list[str], regime: str | None = None) -> list[dict]:
     """
     Simulation fallback: use yfinance 5-min data to find today's movers.
     Pool 3 is ≤10 stocks so this is fast with no batching needed.
     """
     import yfinance as yf
+    min_move = min_move_for_regime(regime)
 
     candidates = []
     for ticker in universe:
@@ -136,7 +147,7 @@ def scan_simulation(universe: list[str]) -> list[dict]:
                 continue
 
             pct = (current - open_px) / open_px * 100
-            if pct < MIN_INTRADAY_MOVE_PCT or pct > 30:
+            if pct < min_move or pct > 30:
                 continue
             if current < vwap_proxy:
                 continue
@@ -164,12 +175,13 @@ def scan_simulation(universe: list[str]) -> list[dict]:
     return candidates
 
 
-def scan(universe: list[str], broker: str = "simulation") -> list[dict]:
-    """Entry point: returns momentum candidates for the given Pool 3 universe."""
+def scan(universe: list[str], broker: str = "simulation", regime: str | None = None) -> list[dict]:
+    """Entry point: returns momentum candidates for the given Pool 3 universe.
+    regime (FEAR/HIGH_VOL/TREND/CHOPPY) adjusts the per-stock move threshold."""
     try:
         if broker == "alpaca":
-            return scan_alpaca(universe)
-        return scan_simulation(universe)
+            return scan_alpaca(universe, regime=regime)
+        return scan_simulation(universe, regime=regime)
     except Exception as e:
         print(f"        ⚠️  Intraday momentum scan error: {e}")
         return []

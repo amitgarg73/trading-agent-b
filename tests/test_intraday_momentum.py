@@ -115,6 +115,26 @@ def test_scan_alpaca_filters_below_min_move():
     assert result == []
 
 
+def test_min_move_for_regime_mapping():
+    assert intraday_momentum.min_move_for_regime("CHOPPY") == 0.3
+    assert intraday_momentum.min_move_for_regime("TREND") == 0.5
+    assert intraday_momentum.min_move_for_regime("FEAR") == 0.75
+    assert intraday_momentum.min_move_for_regime(None) == MIN_INTRADAY_MOVE_PCT
+    assert intraday_momentum.min_move_for_regime("UNKNOWN") == MIN_INTRADAY_MOVE_PCT
+
+
+def test_scan_alpaca_choppy_regime_admits_smaller_move():
+    # A 0.3% mover is filtered by the default 0.5% bar but admitted on a CHOPPY day (0.3% bar).
+    signals = {
+        "SPY":  SPY_UP,
+        "AAPL": {"today_pct_change": 0.3, "above_vwap": True, "rs_vs_spy": 1.0, "vwap": 180.0, "change_pct_15m": 0.1},
+    }
+    with patch("agents.alpaca_broker.get_intraday_signals", return_value=signals), \
+         patch("agents.alpaca_broker.get_live_prices", return_value={"AAPL": 181.0}):
+        assert len(intraday_momentum.scan_alpaca(["AAPL"], regime="CHOPPY")) == 1
+        assert intraday_momentum.scan_alpaca(["AAPL"], regime="TREND") == []
+
+
 def test_scan_alpaca_filters_not_above_vwap():
     signals = {
         "SPY":  SPY_UP,
@@ -214,13 +234,13 @@ def test_scan_simulation_handles_exception_gracefully():
 def test_scan_routes_to_alpaca():
     with patch("scanner.intraday_momentum.scan_alpaca", return_value=[]) as mock_alpaca:
         intraday_momentum.scan(["AAPL"], broker="alpaca")
-    mock_alpaca.assert_called_once_with(["AAPL"])
+    mock_alpaca.assert_called_once_with(["AAPL"], regime=None)
 
 
 def test_scan_routes_to_simulation():
     with patch("scanner.intraday_momentum.scan_simulation", return_value=[]) as mock_sim:
         intraday_momentum.scan(["AAPL"], broker="simulation")
-    mock_sim.assert_called_once_with(["AAPL"])
+    mock_sim.assert_called_once_with(["AAPL"], regime=None)
 
 
 def test_scan_returns_empty_on_exception():

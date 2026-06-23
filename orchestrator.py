@@ -434,7 +434,7 @@ def _maybe_run_intraday_scan(broker: str) -> None:
           f"{available_slots} available | realized ${today_realized:,.2f}")
 
     try:
-        from scanner.intraday_momentum import scan as momentum_scan
+        from scanner.intraday_momentum import scan as momentum_scan, min_move_for_regime
 
         # Tickers already traded today — don't re-enter (open or closed)
         today_closed  = db.select("b_positions", filters={"status": "CLOSED"},
@@ -444,10 +444,17 @@ def _maybe_run_intraday_scan(broker: str) -> None:
             | {p["ticker"] for p in today_closed if p.get("ticker")}
         )
 
-        candidates = [c for c in momentum_scan(pool3_tickers, broker=broker)
+        # Regime-aware entry threshold: loosen the per-stock move bar on quiet tape so
+        # flat days (CHOPPY) aren't structurally trade-less.
+        mkt = market_context.get()
+        regime = market_context.get_regime_label(
+            mkt.get("vix_level"), mkt.get("fear_greed"), mkt.get("spy_change_pct")
+        )
+        min_move = min_move_for_regime(regime)
+        candidates = [c for c in momentum_scan(pool3_tickers, broker=broker, regime=regime)
                       if c["ticker"] not in traded_today]
         print(f"        Momentum movers: {len(candidates)} Pool 3 stocks "
-              f"up ≥{MIN_INTRADAY_MOVE_PCT:.0f}% above VWAP")
+              f"up ≥{min_move:.2f}% above VWAP (regime: {regime})")
 
         # Gap-up injection for intraday scan — universe-restricted
         intraday_tickers = {c["ticker"] for c in candidates}
@@ -474,7 +481,6 @@ def _maybe_run_intraday_scan(broker: str) -> None:
         token_cap = available_slots * 3
         candidates = candidates[:token_cap]
 
-        mkt = market_context.get()
         if open_pos:
             op_lines = []
             for p in open_pos:

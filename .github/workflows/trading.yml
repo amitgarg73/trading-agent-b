@@ -35,22 +35,11 @@ jobs:
       - name: Determine mode
         id: mode
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
-            echo "broker=${{ github.event.inputs.broker || 'alpaca' }}" >> $GITHUB_OUTPUT
-          else
-            HOUR=$(date -u +%H)
-            MIN=$(date -u +%M)
-            TIME=$((10#$HOUR * 60 + 10#$MIN))
-            if [ $TIME -ge 840 ] && [ $TIME -lt 870 ]; then
-              echo "mode=premarket" >> $GITHUB_OUTPUT
-            elif [ $TIME -ge 1195 ]; then
-              echo "mode=eod" >> $GITHUB_OUTPUT
-            else
-              echo "mode=intraday" >> $GITHUB_OUTPUT
-            fi
-            echo "broker=alpaca" >> $GITHUB_OUTPUT
-          fi
+          # cron-job.org triggers this via workflow_dispatch with an explicit mode + broker.
+          # (GitHub Actions schedule triggers were removed — cron-job.org is the only source,
+          # so the old UTC-time-based mode branch was dead code and has been removed.)
+          echo "mode=${{ github.event.inputs.mode }}" >> $GITHUB_OUTPUT
+          echo "broker=${{ github.event.inputs.broker || 'alpaca' }}" >> $GITHUB_OUTPUT
 
       - name: Run Strategy B
         env:

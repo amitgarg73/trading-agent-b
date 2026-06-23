@@ -118,6 +118,7 @@ alter table b_daily_performance add column if not exists regime_label text;
 -- Equity reconciliation columns
 alter table b_daily_performance add column if not exists alpaca_equity numeric;
 alter table b_daily_performance add column if not exists friction_gap  numeric;
+alter table b_daily_performance add column if not exists friction_breakdown jsonb;
 
 -- P0: Execution quality columns
 -- fill_price: actual Alpaca fill price (vs entry_price which is the planned price)

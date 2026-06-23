@@ -71,7 +71,16 @@ INTRADAY_ENTRY_CUTOFF_UTC       = 16   # 12:00 PM ET hard entry cutoff; Strategy
 INTRADAY_SCAN_MAX_RUNS          = 2    # only 10:30 AM + 11:30 AM scans now run; cap reduced accordingly
 INTRADAY_SCAN_MIN_INTERVAL_MINS = 55   # ~1 hr apart (55 min absorbs GH Actions delay)
 INTRADAY_TARGET_PCT             = 0.01
-MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal)
+MIN_INTRADAY_MOVE_PCT           = 0.5   # stock must be up >= this % from open (Option 2 market-participation signal); default / fallback
+# Regime-aware entry threshold: on quiet tape (CHOPPY) the flat 0.5% bar admits nothing,
+# so loosen it; keep it strict in HIGH_VOL/FEAR. Labels from market_context.get_regime_label.
+# Tunable — validate changes with eval_b.py before relying on them live.
+MIN_INTRADAY_MOVE_PCT_BY_REGIME = {
+    "TREND":    0.5,   # SPY already trending — keep the bar
+    "CHOPPY":   0.3,   # flat day — let participation entries through
+    "HIGH_VOL": 0.5,   # don't chase marginal moves in volatile tape
+    "FEAR":     0.75,  # require a stronger signal in fear regimes
+}
 MIN_SPY_MOVE_PCT                = 0.0    # SPY gate disabled — no minimum SPY move required for intraday entries
 STRONG_SECTOR_THRESHOLD         = 2.0   # sector ETF up >= this % overrides SPY gate on rotation days
 STALE_MOVE_THRESHOLD_PCT        = 1.5   # total intraday move above this triggers freshness check

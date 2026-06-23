@@ -365,6 +365,19 @@ def write_daily_performance() -> None:
             "friction_gap":      friction_gap,
             "friction_breakdown": friction_breakdown,
         }
-        db.upsert("b_daily_performance", row, on_conflict="date,pool")
+        try:
+            db.upsert("b_daily_performance", row, on_conflict="date,pool")
+        except Exception as e:
+            # Schema-drift safety: friction_breakdown is an optional jsonb column. If the
+            # table predates the migration, don't lose the whole EOD perf row — drop the
+            # field and retry. (Apply migrations/002_friction_breakdown.sql to keep it.)
+            msg = str(e)
+            if "friction_breakdown" in msg or "PGRST204" in msg:
+                row.pop("friction_breakdown", None)
+                db.upsert("b_daily_performance", row, on_conflict="date,pool")
+                print("[pool_scorer] friction_breakdown column missing — wrote perf row "
+                      "without it; apply migrations/002_friction_breakdown.sql to capture it")
+            else:
+                raise
 
     _print_unfilled_analysis(today_c)
